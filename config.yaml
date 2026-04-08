@@ -1,0 +1,29 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORDIS Configuration
+# ═══════════════════════════════════════════════════════════════════════════
+
+active_provider: groq
+
+models:
+  groq:
+    api_key: "${GROQ_API_KEY}"
+    model: "mixtral-8x7b-32768"
+    rate_limit_tpm: 6000
+    rate_limit_rpm: 28
+    rate_limit_window_sec: 60.0
+
+data:
+  medical_terms_csv: "medical_terms.csv"
+  patients_csv: "patients.csv"
+  nurses_csv: "nurses.csv"
+
+pipeline:
+  name_match_threshold: 78
+
+mongodb:
+  uri: ""
+  db_name: "ordis-platform-test"
+  collections:
+    patients: "patients"
+    nurses: "users"
+    patient_notes: "patient_notes"

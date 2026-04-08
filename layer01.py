@@ -35,6 +35,37 @@ Design notes
 
   Corrections are applied longest-first so that "Mary Jane Smith" is not
   partially shadowed by a shorter match for "Mary Jane".
+
+Bug-fix changelog (all fixes relative to the original)
+────────────────────────────────────────────────────────
+  FIX-1  _strip_punct now uses a boundary-only regex instead of
+         str.maketrans.  The old approach deleted ASCII apostrophe U+0027
+         from *anywhere* in the string, corrupting compound names such as
+         O'Brien → OBrien before they reached match_name.
+
+  FIX-2  New _clean_token() strips trailing possessive suffixes ('s, 's,
+         ʼs) from individual tokens before they are joined into a fragment.
+         Previously "Dharanee's" was passed verbatim to match_name as
+         "Dharanees" (after apostrophe deletion), tanking its fuzzy score.
+
+  FIX-3  Context-free scan now iterates window sizes (_MAX_WINDOW, 2, 1).
+         The original code skipped window_size=1 entirely, making single-
+         token misspelled names invisible when no trigger word preceded them.
+
+  FIX-4  Circular correction guard now maintains a lowercase-keyed mirror
+         dict (_final_map_lower) for membership tests.  The original check
+         ``c.canonical.lower() in final_map`` compared a lowercased string
+         against mixed-case dict keys and therefore never fired.
+
+  FIX-5  Short English stop words ("on", "at", "by", …) are now skipped
+         before any match_name call.  _MIN_FRAGMENT_LEN = 2 previously
+         allowed these 2-char tokens to reach the fuzzy matcher after a
+         trigger word, risking false-positive corrections.
+
+  FIX-6  New _normalise_apostrophes() maps curly (U+2019) and modifier-
+         letter (U+02BC) apostrophes to ASCII U+0027 *on the fragment only*
+         before match_name, so registry lookups are apostrophe-variant-
+         agnostic.  The original text is never mutated.
 """
 
 from __future__ import annotations
@@ -43,7 +74,7 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
 
 from shared import (
     ConfigManager,
@@ -79,12 +110,57 @@ _NAME_TRIGGERS = re.compile(
 # Unicode letter range covers accented / non-ASCII names (Irish, Indian, etc.).
 _NAME_TOKEN_RE = re.compile(
     r"[A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]+"
-    r"(?:['\u2019\u02BC\-][A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]+)*"
+    r"(?:[''\u2019\u02BC\-][A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]+)*"
 )
 
-# Characters to strip from fragment boundaries before matching.
-_PUNCT_CHARS = r""".,;:!?()\[\]{}"'"""
-_PUNCT_STRIP = str.maketrans("", "", _PUNCT_CHARS)
+# ── FIX-1: boundary-only punctuation stripper ─────────────────────────────────
+# Strips characters at the START and END of a fragment that are not Unicode
+# letters.  Interior characters (apostrophes in O'Brien, hyphens in Mary-Jane)
+# are deliberately preserved.
+#
+# Replaced the old str.maketrans approach which deleted ASCII apostrophe
+# U+0027 from *everywhere* in the string, corrupting compound names.
+_BOUNDARY_PUNCT_RE = re.compile(
+    r"^[^A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]+"
+    r"|[^A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]+$",
+    re.UNICODE,
+)
+
+# ── FIX-2: possessive-suffix stripper ────────────────────────────────────────
+# _NAME_TOKEN_RE is intentionally greedy: it treats the compound form
+# O'Brien as a single token, but that same greediness captures the
+# possessive suffix in "Dharanee's" as part of the token.
+# This regex strips the trailing 's (all apostrophe variants) from a
+# single token BEFORE it is joined into a fragment.
+_POSSESSIVE_RE = re.compile(r"[''\u2019\u02BC][Ss]$")
+
+# ── FIX-5: stop-word guard ────────────────────────────────────────────────────
+# Common English words that follow trigger words in clinical transcripts
+# but are NOT name fragments.  Without this guard, tokens like "on", "at",
+# "by" pass _MIN_FRAGMENT_LEN = 2 and reach match_name, risking a spurious
+# correction if any registry name fuzzy-scores above the threshold.
+_STOP_WORDS: FrozenSet[str] = frozenset({
+    # prepositions / articles / conjunctions (2-3 chars, most at-risk)
+    "an", "as", "at", "by", "do", "go", "he", "if", "in", "is", "it",
+    "me", "my", "no", "of", "on", "or", "so", "to", "up", "we",
+    "and", "are", "but", "did", "for", "had", "has", "her", "him",
+    "his", "how", "its", "let", "may", "nor", "not", "now", "off",
+    "our", "out", "own", "per", "put", "set", "she", "the", "too",
+    "use", "via", "was", "who", "yet",
+    # common 4-5 char words that appear after trigger words in transcripts
+    "also", "been", "both", "call", "came", "come", "done", "each",
+    "else", "even", "from", "gave", "give", "gone", "good", "have",
+    "here", "into", "just", "keep", "left", "like", "made", "make",
+    "more", "most", "much", "must", "need", "next", "once", "only",
+    "over", "said", "same", "seen", "self", "some", "soon", "such",
+    "take", "than", "that", "them", "then", "they", "this", "thus",
+    "time", "took", "upon", "used", "very", "well", "went", "were",
+    "what", "when", "will", "with", "your",
+    # clinical context words that legitimately follow trigger words
+    "room", "ward", "duty", "note", "form", "care", "team", "data",
+    "file", "case", "unit", "home", "rota", "rota", "plan", "help",
+    "call", "family", "meeting", "report", "review",
+})
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
@@ -150,14 +226,53 @@ class Layer01Result:
 def _normalise_unicode(text: str) -> str:
     """
     NFC-normalise *text* so composed and decomposed Unicode forms compare equal.
-    e.g. ``e\u0301`` (e + combining acute) → ``é`` (U+00E9).
+    e.g. ``e\\u0301`` (e + combining acute) → ``é`` (U+00E9).
     """
     return unicodedata.normalize("NFC", text)
 
 
 def _strip_punct(s: str) -> str:
-    """Remove leading/trailing punctuation from a name fragment."""
-    return s.translate(_PUNCT_STRIP).strip()
+    """
+    Remove leading/trailing non-letter characters from a name fragment.
+
+    FIX-1: Replaces the old ``str.maketrans`` approach, which deleted the
+    ASCII apostrophe from *all positions* in the string (including the
+    interior of ``O'Brien``).  This regex only touches the fragment's
+    boundaries; interior apostrophes and hyphens are preserved.
+    """
+    return _BOUNDARY_PUNCT_RE.sub("", s)
+
+
+def _clean_token(token: str) -> str:
+    """
+    Strip a trailing possessive suffix (``'s``, ``'s``, ``ʼs``) from a
+    single name token.
+
+    FIX-2: ``_NAME_TOKEN_RE`` treats ``Dharanee's`` as one token because
+    the apostrophe-plus-letter compound form is part of its grammar.  Before
+    the token is joined into a fragment and sent to ``match_name``, the
+    possessive marker must be removed so that the fuzzy scorer sees
+    ``Dharanee`` rather than ``Dharanee's`` (or the even worse ``Dharanees``
+    produced by the old punctuation-stripping approach).
+    """
+    return _POSSESSIVE_RE.sub("", token)
+
+
+def _normalise_apostrophes(s: str) -> str:
+    """
+    Map all Unicode apostrophe variants to the ASCII apostrophe (U+0027)
+    on a *fragment string* before it is passed to ``match_name``.
+
+    FIX-6: Registry entries typically store the ASCII form ``O'Brien``.
+    Voice-transcription engines may emit the curly quotation mark U+2019
+    or the Unicode modifier letter apostrophe U+02BC.  Without this step
+    the fuzzy scorer must bridge a Unicode code-point difference in addition
+    to the phonetic difference, depressing the confidence score.
+
+    This function is intentionally applied only to the fragment copy; the
+    original transcript text is never mutated.
+    """
+    return s.replace("\u2019", "'").replace("\u02BC", "'")
 
 
 def _extract_name_tokens(text: str, max_tokens: int = _MAX_WINDOW) -> List[str]:
@@ -165,7 +280,7 @@ def _extract_name_tokens(text: str, max_tokens: int = _MAX_WINDOW) -> List[str]:
     Extract up to *max_tokens* name-like tokens from the **start** of *text*.
 
     Compound name forms are treated as a single token:
-      - Apostrophe variants: O'Brien, O\u2019Brien, O\u02BCBrien
+      - Apostrophe variants: O'Brien, O\\u2019Brien, O\\u02BCBrien
       - Hyphenated:          Mary-Jane, Van-der-Berg
       - Accented:            Seán, Áine, Dhruv
     """
@@ -257,21 +372,39 @@ def _collect_trigger_corrections(
 
     for m in _NAME_TRIGGERS.finditer(text):
         after_trigger = text[m.end():]
-        tokens = _extract_name_tokens(after_trigger, _MAX_WINDOW)
+        raw_tokens = _extract_name_tokens(after_trigger, _MAX_WINDOW)
 
-        if not tokens:
+        if not raw_tokens:
             log.debug(
                 "L1 %s: trigger at pos %d — no name tokens follow", label, m.start()
             )
+            continue
+
+        # FIX-2: strip possessive suffix from each token before building windows.
+        tokens = [_clean_token(t) for t in raw_tokens]
+        # Remove any token that became empty after possessive stripping.
+        tokens = [t for t in tokens if t]
+
+        if not tokens:
             continue
 
         # Try progressively shorter windows until a registry match is found.
         matched = False
         for window_size in range(min(_MAX_WINDOW, len(tokens)), 0, -1):
             raw_frag = " ".join(tokens[:window_size])
+            # FIX-1: boundary-only strip (interior apostrophes preserved).
             fragment = _strip_punct(raw_frag)
 
             if len(fragment) < _MIN_FRAGMENT_LEN:
+                continue
+
+            # FIX-5: skip common English words that follow trigger words but
+            # are not names.  Without this guard, words like "on", "at", "by"
+            # reach match_name and can produce spurious corrections.
+            if fragment.lower() in _STOP_WORDS:
+                log.debug(
+                    "L1 %s trigger: skipping stop word '%s'", label, fragment
+                )
                 continue
 
             frag_key = fragment.lower()
@@ -279,7 +412,11 @@ def _collect_trigger_corrections(
                 matched = True
                 break
 
-            resolved, conf = match_name(fragment, registry, threshold=threshold)
+            # FIX-6: normalise apostrophe variants on the fragment copy only
+            # so that "O'Bryen" (curly) matches registry entry "O'Brien" (ASCII).
+            match_fragment = _normalise_apostrophes(fragment)
+
+            resolved, conf = match_name(match_fragment, registry, threshold=threshold)
 
             if resolved is None:
                 # No match even at this threshold; try a smaller window.
@@ -324,7 +461,7 @@ def _collect_scan_corrections(
     known_canonicals: Set[str],
 ) -> List[NameCorrection]:
     """
-    Context-free window scan: slide a 2–3 token window over *text* and
+    Context-free window scan: slide a 1–3 token window over *text* and
     correct fragments that fuzzy-match a registry entry but were **not**
     already caught by the trigger scan.
 
@@ -344,20 +481,41 @@ def _collect_scan_corrections(
     Returns
     -------
     List of :class:`NameCorrection` objects (may be empty).
+
+    Notes
+    -----
+    FIX-3: Window sizes now include 1 (previously only 3 and 2 were tried).
+    Single-token misspelled names that appear without a preceding trigger
+    word were entirely invisible to the context-free scan before this fix.
+
+    FIX-2: Possessive suffixes are stripped from tokens before joining.
+
+    FIX-5: Stop words are skipped before match_name is called.
+
+    FIX-6: Apostrophe variants on the fragment are normalised before matching.
     """
     corrections:  List[NameCorrection] = []
     seen_lower:   Set[str]             = set()
     scan_thresh   = threshold + _SCAN_THRESHOLD_BUMP
 
-    tokens = _NAME_TOKEN_RE.findall(text)
+    raw_tokens = _NAME_TOKEN_RE.findall(text)
+    # FIX-2: strip possessive suffix from every token once, up front.
+    tokens = [_clean_token(t) for t in raw_tokens]
+    tokens = [t for t in tokens if t]   # drop any that became empty
 
-    # Iterate windows longest-first to match multi-word names before their parts.
-    for window_size in (_MAX_WINDOW, 2):
+    # FIX-3: include window_size=1 so isolated single-token misspellings are
+    # caught.  Iterate longest-first to match multi-word names before parts.
+    for window_size in (_MAX_WINDOW, 2, 1):
         for i in range(len(tokens) - window_size + 1):
             raw_frag = " ".join(tokens[i : i + window_size])
+            # FIX-1: boundary-only strip.
             fragment = _strip_punct(raw_frag)
 
             if len(fragment) < _MIN_SCAN_FRAG_LEN:
+                continue
+
+            # FIX-5: skip stop words in the context-free scan too.
+            if fragment.lower() in _STOP_WORDS:
                 continue
 
             frag_key = fragment.lower()
@@ -375,13 +533,16 @@ def _collect_scan_corrections(
                 seen_lower.add(frag_key)
                 continue
 
+            # FIX-6: apostrophe normalisation on the fragment copy.
+            match_fragment = _normalise_apostrophes(fragment)
+
             # Patient registry has priority in scan (broader population).
             for registry, lbl in (
                 (patient_registry, "patient"),
                 (nurse_registry,   "nurse"),
             ):
                 resolved, conf = match_name(
-                    fragment, registry, threshold=scan_thresh
+                    match_fragment, registry, threshold=scan_thresh
                 )
 
                 if resolved is None:
@@ -456,11 +617,14 @@ def run(
     * Non-ASCII / accented names (Irish, Indian) → Unicode-aware tokenisation.
     * Compound names with apostrophes or hyphens → treated as a single token.
     * Trailing punctuation on fragments (``"Dharani."``).
+    * Possessive suffixes (``"Dharanee's"``) → possessive stripped before match.
+    * Apostrophe variants (curly, modifier-letter) normalised before match.
     * Same misspelling under multiple trigger words → deduplicated.
     * Misspelling appearing multiple times → **all** occurrences replaced.
     * Empty registries → short-circuits with a warning, no crash.
     * Corrections applied via a **single** regex pass (no position-drift,
       no wrong-occurrence substitution, no cascading replacements).
+    * Circular corrections (A→B, B→C) detected and skipped with a warning.
     """
     tag = ordis_id or "?"
 
@@ -510,7 +674,7 @@ def run(
     )
 
     # Merge with deduplication: first occurrence (nurse priority) wins.
-    seen_originals: Set[str]           = set()
+    seen_originals: Set[str]                  = set()
     trigger_corrections: List[NameCorrection] = []
     for c in nurse_corr + patient_corr:
         key = c.original.lower()
@@ -537,25 +701,42 @@ def run(
     )
 
     # ── Step 4: Deduplicate and finalise correction map ───────────────────────
-    final_map: Dict[str, str] = {}
+    # FIX-4: The original code checked ``c.canonical.lower() in final_map``
+    # to detect circular corrections, but final_map uses mixed-case originals
+    # as keys.  A lowercase string can never be found in a mixed-case dict
+    # unless the key happens to already be lowercase, so the guard was
+    # effectively dead code.
+    #
+    # Fix: maintain _final_map_lower as a parallel lowercase-keyed dict for
+    # all membership tests.  final_map (mixed-case keys) is used only for
+    # the regex replacement step where case must be preserved.
+    final_map:       Dict[str, str] = {}   # original-case key → canonical
+    _final_map_lower: Dict[str, str] = {}  # lowercase key    → canonical  (FIX-4)
     all_corrections: List[NameCorrection] = []
 
     for c in trigger_corrections + scan_corrections:
         key = c.original.lower()
-        if key not in final_map:
-            final_map[c.original] = c.canonical
-            all_corrections.append(c)
-            # Guard against circular corrections (e.g. A→B where B was also
-            # identified as wrong somewhere — extremely rare but possible with
-            # noisy registries).
-            if c.canonical.lower() in final_map:
-                log.warning(
-                    "L1 [%s]: circular correction risk — '%s' is both a "
-                    "canonical form and a pending original; skipping '%s'",
-                    tag, c.canonical, c.original,
-                )
-                del final_map[c.original]
-                all_corrections.pop()
+
+        if key in _final_map_lower:
+            # Already have a correction for this fragment (earlier entry wins).
+            continue
+
+        # FIX-4: circular-correction guard using the lowercase mirror.
+        # Scenario: A→B is already in the map and now we're about to add B→C.
+        # Applying both would silently change A to C in one pass, which is
+        # almost certainly a registry artefact rather than a real correction.
+        canonical_lower = c.canonical.lower()
+        if canonical_lower in _final_map_lower:
+            log.warning(
+                "L1 [%s]: circular correction risk — '%s' is both a "
+                "canonical form and a pending original; skipping '%s' → '%s'",
+                tag, c.canonical, c.original, c.canonical,
+            )
+            continue
+
+        final_map[c.original]        = c.canonical
+        _final_map_lower[key]        = c.canonical
+        all_corrections.append(c)
 
     # ── Step 5: Apply ALL corrections in a single regex pass ─────────────────
     # Key correctness property: text_norm is never mutated between discovery
@@ -609,14 +790,23 @@ if __name__ == "__main__":
         # Same misspelling twice — both should be corrected
         "Nurse Dharanee spoke with patient Dharanee's family.",
 
-        # Compound apostrophe name
+        # Compound apostrophe name — FIX-1 / FIX-2
         "Resident Maacuus O'Rielly was discharged.",
 
-        # Unicode curly apostrophe
+        # Unicode curly apostrophe — FIX-6
         "Resident Maacuus O\u2019Rielly was admitted.",
 
-        # Punctuation bleeding into fragment
+        # Possessive bleeding into fragment — FIX-2
+        "Nurse Dharanee's patient refused medication.",
+
+        # Punctuation bleeding into fragment — FIX-1
         "Nurse Dharanee. The patient was calm.",
+
+        # Single-token name without trigger word — FIX-3
+        "Dharanee administered meds. Willeem confirmed the handover.",
+
+        # Stop word immediately after trigger — FIX-5
+        "Medication was administered by nurse on duty at 14:00.",
 
         # Empty input
         "",
@@ -626,6 +816,9 @@ if __name__ == "__main__":
 
         # No names at all
         "The patient was observed sleeping. Vitals are stable.",
+
+        # Backward-compat unpacking with zero corrections
+        "All vitals stable. No incidents recorded.",
     ]
 
     samples = [sys.argv[1]] if len(sys.argv) > 1 else _SAMPLES

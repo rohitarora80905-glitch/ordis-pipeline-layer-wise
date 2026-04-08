@@ -1,0 +1,360 @@
+[
+  {
+    "date": "2026-02-21T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-02-22T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-02-23T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-02-24T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-02-25T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-02-27T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-02-28T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-03-01T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-03-02T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-03-03T00:00:00.000Z",
+    "patientsNotes": []
+  },
+  {
+    "date": "2026-02-16T00:00:00.000Z",
+    "patientsNotes": [
+      {
+        "patientName": "20NA",
+        "transcriptions": [
+          {
+            "text": "She was in her room, assisted with all the UDLs. He had overmates in the dining room, had good intake. Currently he is spending time in the activity room. No other uncomfortable noted care plan and observation needs to be continued."
+          }
+        ],
+        "summary": "Resident was in their room and was assisted with all ADLs. Resident was in the dining room with roommates and had good intake. Resident is currently spending time in the activity room. No other discomfort noted. Care plan and observation need to be continued."
+      },
+      {
+        "patientName": "21PY",
+        "transcriptions": [
+          {
+            "text": "Alice Lambe, she was initially in the room. She had all the meds and assisted with the ADLS. Currently she is in her room and sitting in the armchair. Care needs to be continued."
+          }
+        ],
+        "summary": "Alice Lambe was initially in her room. All medications were administered, and assistance was provided with activities of daily living. Currently, she is in her room sitting in the armchair. Care needs to be continued. No discomfort"
+      },
+      {
+        "patientName": "1YS",
+        "transcriptions": [
+          {
+            "text": "having 50 minutes check growing and under abdomen is"
+          },
+          {
+            "text": "Paddy was comfortable throughout the shift. All the medications given. 15 minutes check ongoing. His groin and abdominal floor cleansed with Nisrole, ensured daytime toileting. She is fine and he is sitting in the reception area currently."
+          },
+          {
+            "text": "Paddy was noticed with on and off sleep reassurance given offered a cup of tea. Currently he is sleeping comfortably on the bed. The care care is continuing and the observation is continuing."
+          }
+        ],
+        "summary": "Paddy was comfortable throughout the shift. 15-minute checks ongoing. All medications given. Groin and abdominal fold cleansed with Nizoral; ensured daytime toileting. Resident sitting in the reception area currently. Paddy was noticed with on-and-off sleep; reassurance was given and a cup of tea was offered. Currently, he is sleeping comfortably on the bed. Care is continuing and observation is continuing."
+      }
+    ]
+  },
+  {
+    "date": "2026-02-17T00:00:00.000Z",
+    "patientsNotes": [
+      {
+        "patientName": "1YS",
+        "transcriptions": [
+          {
+            "text": "While receiving Paddy was sitting in the sitting room with the other residents and he remains comfortable and later he is a little bit after getting a tea cup of tea and all night he slept well and at the moment he is awake."
+          }
+        ],
+        "summary": "While receiving, Paddy was sitting in the sitting room with the other residents and remained comfortable. Later, he was a little bit after getting a cup of tea. All night, he slept well. At the moment, he is awake."
+      },
+      {
+        "patientName": "2PL",
+        "transcriptions": [
+          {
+            "text": "While receiving Patrick was watching television and had medication given as per the card. And whole night he slept well and there is no complaint he raised and currently he is sleeping."
+          }
+        ],
+        "summary": "While receiving, Patrick was watching television and medication was given as per the card. He slept well throughout the night, raised no complaints, and is currently sleeping."
+      },
+      {
+        "patientName": "3YM",
+        "transcriptions": [
+          {
+            "text": "Jack was walking through the corridor at the beginning of the shift and had medication given and he was watching TV. Then later he sat in bed and throughout the night he slept well and no complaints were voiced. Currently he is in bed."
+          }
+        ],
+        "summary": "At the beginning of the shift, Jack was walking through the corridor. Medication was administered. He was watching TV. Later, he sat in bed. Throughout the night, he slept well and no complaints were voiced. Currently, he is in bed."
+      },
+      {
+        "patientName": "4CM",
+        "transcriptions": [
+          {
+            "text": "While starting the shift, Kahel was sitting in the sitting room. After medication, he sat in the bed and he slept well. And in the morning time, noted, his right heel is a little bit cracked and there is no complaints. Currently, he is sleeping."
+          }
+        ],
+        "summary": "At the start of the shift, Kahel was sitting in the sitting room. After medication, he sat on the bed and slept well. In the morning, his right heel was noted to be a little cracked; no complaints were reported. Currently, he is sleeping."
+      },
+      {
+        "patientName": "20NA",
+        "transcriptions": [
+          {
+            "text": "I want to receive in oil appears to be comfortable in his room and was watching TV initially He seems to be a good form night medication given us for the cardiac assisted with the toilet toileting He has no any complaints during night"
+          }
+        ],
+        "summary": "Resident in end of life appeared comfortable in his room and was watching TV initially. Night medication was given as ordered for cardiac. Assisted with toileting. No complaints during the night."
+      },
+      {
+        "patientName": "21PY",
+        "transcriptions": [
+          {
+            "text": "Patrick was in the sitting room with initial checks like medication were administered. He enjoys more concept to be prepared approximately 8.10.30. The call bell was placed within reach and he was encouraged to use the bell it required."
+          }
+        ],
+        "summary": "Patrick was in the sitting room. Initial checks were completed, and medication was administered. He was encouraged to use the call bell as required, and the call bell was placed within reach. Time documented: approximately 08:10:30."
+      },
+      {
+        "patientName": "22AB",
+        "transcriptions": [
+          {
+            "text": "Alice was in bed and watching TV initially later she slept well night medication on administrator there is no complaints during night"
+          }
+        ],
+        "summary": "Alice was in bed watching TV initially. Later, she slept well. Night medication was administered. No complaints during the night."
+      },
+      {
+        "patientName": "23YM",
+        "transcriptions": [
+          {
+            "text": "Joseph was sitting in the sitting room in Shelley, later he sat with two bed at night medications in Blooringland provide assistance with toileting, called well and reunal where he kept within reach, his neck elevated with pillows and booty so he has no any complaints during night"
+          }
+        ],
+        "summary": "Joseph was sitting in the sitting room in Shelley. Later, he sat with two carers. Night medications were needed. In Blooringland, assistance was provided with toileting. He was alert, and the call bell was kept within reach. His neck was elevated with pillows and boots. He had no complaints during the night."
+      }
+    ]
+  },
+  {
+    "date": "2026-02-19T00:00:00.000Z",
+    "patientsNotes": [
+      {
+        "patientName": "20NA",
+        "transcriptions": [
+          {
+            "text": "Room number 20. While receiving Noel was in his room and he was watching TV and all his night medications given as per cardiac assisted him for toileting after that he settled in the bed and the hourly checks going on and he slept well in the last night and he was"
+          }
+        ],
+        "summary": "Room 20: Resident was in his room watching TV. Night medications were given as per Kardex. Assisted with toileting. After toileting, resident settled in bed. Hourly checks ongoing. Resident slept well last night."
+      },
+      {
+        "patientName": "21PY",
+        "transcriptions": [
+          {
+            "text": "While receiving, Patrick was in the sitting room and all his night medications were given as per cardiac and he enjoyed his smoking and after that he sat in bed and he slept well last night and hourly checks were maintained and no complaints at the moment. He has a fading bruise on left flank otherwise he is alright and he slept well."
+          }
+        ],
+        "summary": "While receiving, Patrick was in the sitting room. All night medications were given as per Kardex. He enjoyed smoking. After that, he sat in bed and slept well last night. Hourly checks were maintained. No complaints at the moment. He has a fading bruise on the left flank; otherwise, he is alright."
+      },
+      {
+        "patientName": "22AB",
+        "transcriptions": [
+          {
+            "text": "Room number 22, she was watching TV at initial times and overnight medications are given, including PR and salt pain for the leg pain and pain assessment done. She was assisted with toileting and in call bell was kept in place and encouraged her to use when it required and maintaining hourly checks and she slept well and no complaints at the moment."
+          }
+        ],
+        "summary": "Room 22: Resident was watching TV at initial times. Overnight medications were given, including PRN and paracetamol for leg pain; pain assessment was completed. Assisted with toileting. Call bell was kept in place and resident was encouraged to use it when required. Hourly checks were maintained. Resident slept well and had no complaints at the moment."
+      },
+      {
+        "patientName": "23YM",
+        "transcriptions": [
+          {
+            "text": "He was in the stair family room. One night, medications were given, including an alandus. After that, he sat in the bed. The owner's aunt called the captain's place and put his own. He elevated his food floor and hourly checks made daily. He slept well. No complaints at the moment."
+          }
+        ],
+        "summary": "Resident was in the stair family room. Night medications were given, including an anxiolytic/sedative. After medications, resident sat in bed. The owner's aunt called the captain's place and put his own. He elevated his food floor and hourly checks made daily. Resident slept well. No complaints at the moment."
+      }
+    ]
+  },
+  {
+    "date": "2026-02-20T00:00:00.000Z",
+    "patientsNotes": [
+      {
+        "patientName": "20NA",
+        "transcriptions": [
+          {
+            "text": "Room no. 20 He was with his brother at initial times His night medication is given as per cardiac After toileting, assisted him to bed Cornwell was in place and urinal was also in place An hourly check is maintaining Currently he is sleeping, no complaints voiced"
+          }
+        ],
+        "summary": "Resident in room 20 was with his brother at initial times. Night medication was given as per cardiac. After toileting, resident was assisted to bed. Cornwell was in place and urinal was also in place. Hourly checks are being maintained. Currently sleeping; no complaints voiced."
+      },
+      {
+        "patientName": "21PY",
+        "transcriptions": [
+          {
+            "text": "Chrome number 21. He was in bed from the beginning of the shift. All night medications given as per cardiac and Corbel plays in kept and I replaced him to use when it are required. An hourly check plus main day and currently he is sleeping No complaints at the moment"
+          }
+        ],
+        "summary": "Resident was in bed from the beginning of the shift. All night medications were given as per cardiac and Corbil regimen, and PRN was replaced to use when required. Hourly checks were completed. Resident is currently sleeping. No complaints at the moment."
+      },
+      {
+        "patientName": "22AB",
+        "transcriptions": [
+          {
+            "text": "Room number 22, she was watching TV at initial times. Night medications are given including PR and salt pain, poor brain, back pain and pain assessment done. After toileting, she slept well and maintaining hourly checks. Iris had one episode of vomiting. She was pleased that she had one banana. After that it happened and PR and motilium were given. The encourage her to drink more water. At the moment she is sleeping. No other complaints."
+          }
+        ],
+        "summary": "Resident in room 22 was watching TV at initial check. Night medications were given, including paracetamol and ibuprofen. Back pain and pain assessment were completed. After toileting, resident slept well with hourly checks maintained. Iris had one episode of vomiting; resident was pleased that she had one banana. After the vomiting episode, paracetamol and Motilium were given, and resident was encouraged to drink more water. At the time of documentation, resident was sleeping with no other complaints."
+      },
+      {
+        "patientName": "23YM",
+        "transcriptions": [
+          {
+            "text": "Room number 23. He remains comfortable in the upstairs family room. Night medications given including glandus as per the card. After that he assisted him to bed. Urinal and corbel kept in place and encouraged him to use when necessary. He kept booties on and elevated his foot. Averly checks may be gaining. Currently he is sleeping. No other complaints."
+          }
+        ],
+        "summary": "Resident in room 23 remained comfortable in the upstairs family room. Night medications given, including Lantus as per the card. Assisted to bed. Urinal and commode kept in place and encouraged to use when necessary. Kept booties on and foot elevated. Hourly checks maintained. Currently sleeping. No other complaints."
+      },
+      {
+        "patientName": "1YS",
+        "transcriptions": [
+          {
+            "text": "Rule No. 1 returned from the hospital at approximately 22 hours and was assisted to his room. ACT, brain, scan, and X-ray were completed in the hospital with no evidence of injury or fracture identified. He was diagnosed with a respiratory tract infection, an anesthesiologist, analgesia, and antibiotics were commenced. His crime medications are currently awaiting from pharmacy. A full skin assessment was carried out, and returned with no issues observed. Addressing remains in situ on the left forehead. He is on neurological observation as per protocol. He was offered a cup of tea, accepted his medication as prescribed on the cardiac. No further issues were noted at this time. Care plan and ongoing observation continues. G.P. was informed via mail that John had been transferred back from the hospital."
+          }
+        ],
+        "summary": "Returned from hospital at approximately 22:00 and was assisted to his room. CT brain scan and X-ray were completed in hospital with no evidence of injury or fracture identified. Diagnosed with a respiratory tract infection; analgesia and antibiotics were commenced. Cream medications are currently awaiting from pharmacy. Full skin assessment carried out with no issues observed; dressing remains in situ on the left forehead. Neurological observations commenced as per protocol. Offered a cup of tea and accepted medication as prescribed on the Cardex. No further issues were noted at this time. Care plan and ongoing observation continue. GP was informed via mail that John had been transferred back from the hospital."
+      },
+      {
+        "patientName": "2PL",
+        "transcriptions": [
+          {
+            "text": "Patrick was lying comfortably in the bed at initial times, administered night medication as per cardiac, terminated comfortable position at frequent intervals, cleansed the eye with the bifurculin, eye looks red, ensured air mattress is working and booty zone, kept the guard bell in place, emulsifying ointment applied on sacrum, maintained periodus checks, sleeping at present, no further complaints noted. Care plan and ongoing observation continues."
+          }
+        ],
+        "summary": "Patrick was lying comfortably in bed at initial times. Night medication was administered as per cardiac. Repositioned to a comfortable position at frequent intervals. Eye cleansed with the bifrucal; eye looks red. Ensured air mattress is working and attended to coccyx area. Kept the guard bell in place. Emulsifying ointment applied on sacrum. Periodic checks maintained. Sleeping at present with no further complaints noted. Care plan and ongoing observation continues."
+      },
+      {
+        "patientName": "3YM",
+        "transcriptions": [
+          {
+            "text": "Community 3 appears to be comfortable in mood. Night medications are given as per cardiac. Morbill was promoted and he was encouraged to use when needed. regular sex wear may contain current risks likely. No, the compliance is their most independent job. The plan and observation continues."
+          }
+        ],
+        "summary": "Community 3 appears to be comfortable in mood. Night medications were given as per cardiac. Mobility was promoted, and he was encouraged to use when needed. The plan and observation continue."
+      },
+      {
+        "patientName": "4CM",
+        "transcriptions": [
+          {
+            "text": "Remember, four of these to be comfortable in the double, a porn initiative, night medication, wear, at least, wear them percally. Assisted him with the toilet techniques, the cord belt was placed within reach and he was encouraged to use it when needed. No complaints reported, hourly checks made in, sleeping comfortably, no complaints voiced, care plan and ongoing observation continues."
+          }
+        ],
+        "summary": "Assisted resident with toilet techniques. Assistance alert placed within reach and resident encouraged to use it when needed. No complaints reported/voiced. Hourly checks completed. Resident sleeping comfortably. Care plan and ongoing observation continued."
+      }
+    ]
+  },
+  {
+    "date": "2026-02-18T00:00:00.000Z",
+    "patientsNotes": [
+      {
+        "patientName": "1YS",
+        "transcriptions": [
+          {
+            "text": "Room No.1 received the room No.1 in the bedroom. He was arranging the things in the cupboard initially. Later he was trusted with assistance of poor, bit difficult with the ADLS. Then he had the breakfast and dinner in his own room. Good intake noted. Currently he is in the room. Regular checks maintained. No other complaints at the moment. Care is continued."
+          },
+          {
+            "text": "Notice that he was difficult during the ADLS. The assistance of floor members needed for ADLS and he was bit agitated during that time. Currently, he is in the sector deformed arranging the things in the kabood. Regular checks is maintained. Continue to monitor."
+          }
+        ],
+        "summary": "Resident in Room No. 1 was in the bedroom arranging items in the cupboard. Assisted with ADLs due to poor balance. Had breakfast and dinner in own room; good intake noted. Currently in the room. Regular checks maintained. No other complaints at the moment. Care continued. Noticed that the resident was difficult during ADLs. Support staff assistance was needed for ADLs, and he was restless or upset during that time. Currently, he is in the bedroom arranging things in the cupboard. Regular checks are maintained. Continue to monitor."
+      },
+      {
+        "patientName": "2PL",
+        "transcriptions": [
+          {
+            "text": "He received room number 2 in the bed. He was comfortable initially. Later he was up and dressed for the break faster. He took his medications and assisted with the ADLS. He was spending time in the sitting room, sitting in the chair, maintained the chair in 10-20 degree angle to relieve the pressure. He had all meals with the assistant. He couldn't take notice. Currently he is on the bed. Regular checks may be needed. No other issues noted. Care continued."
+          }
+        ],
+        "summary": "Resident received room number 2 in the bed and was comfortable initially. Later, resident was up and dressed for the break faster. Medications were taken. Resident was assisted with activities of daily living. Resident spent time in the sitting room sitting in a chair; the chair was maintained at a 10–20 degree angle to relieve pressure. Resident had all meals with assistance. Resident could not take notice. Currently, resident is in bed; regular checks may be needed. No other issues noted. Care continued."
+      },
+      {
+        "patientName": "3YM",
+        "transcriptions": [
+          {
+            "text": "Room No.3 He was fine. He appeared pleasant throughout the day. He was walking through the corridor. He is independent with the ADLS. He had all medications and he had all the meals. He was in room with no other issues. Currently, he is in room enjoying supper and care to be continued."
+          }
+        ],
+        "summary": "Room No. 3: He was fine and appeared pleasant throughout the day. He was walking through the corridor and is independent with activities of daily living. He had all medications and all meals. He was in his room with no other issues. Currently, he is in his room enjoying supper; care to be continued."
+      },
+      {
+        "patientName": "4CM",
+        "transcriptions": [
+          {
+            "text": "room number four he appeared to be pleasant and comfortable he was on the bed around 10 o'clock he wake up and he had breakfast in the room then he took all the medications currently no other discomfort noted he is mobilizing with a frame for the assistance of two then regular checks maintained, he continued to monitor currently he is having the supper in the sitting room no other issues noted yet"
+          }
+        ],
+        "summary": "At around 10:00, the resident in room 4 appeared pleasant and comfortable and was in bed. He woke up and had breakfast in his room. He took all current medications. No other discomfort was noted. He is mobilizing with an assistive device and requires assistance of two carers. Regular checks were maintained and monitoring continued. He was having supper in the sitting room. No other issues were noted."
+      }
+    ]
+  },
+  {
+    "date": "2026-02-26T00:00:00.000Z",
+    "patientsNotes": [
+      {
+        "patientName": "1YS",
+        "transcriptions": [
+          {
+            "text": "Room number one, he was in the room at the beginning, all medications given and he assisted with all his needs and kept a bell in place and better weight cream applied on both the legs. 30 minutes check his maintaining and he was sitting in the bed and no complaints for his death. Around 12.30 hours after hearing the sensor mount alarm, I went to check and found he was sitting on the floor near to the bed and the sensor mount was displaced. He was assisted to lie down on the floor and with the help of carers, he was assisted to stand up and then he was, around 12 o'clock check, he was observed sitting on the bed and there is no apparent injuries and currently he is sitting in the chair and sleeping."
+          }
+        ],
+        "summary": "Resident in room 1 was in the room at the beginning of the shift. All medications were given. Assisted with all needs; call bell kept in place. Barrier cream applied to both legs. During 30-minute checks, resident was observed sitting in bed with no health complaints. At around 12:30, sensor mat alarm sounded; staff found resident sitting on the floor near the bed with the sensor mat displaced. Resident was assisted to lie down on the floor and, with help of carers, assisted to stand. At around 12:00 check, resident was observed sitting on the bed with no apparent injuries. Currently resident is sitting in the chair and sleeping."
+      },
+      {
+        "patientName": "2PL",
+        "transcriptions": [
+          {
+            "text": "Room No. 2 Patrick was in bed from the beginning. Head medications were given as prescribed. And comfortable positions given at different intervals. And he is on air mattress and it is working. Foot is on and the cold bed kept in place. Cabinol cream applied over the sacrum and then drugs in situ. And hourly checks made gaining no complaints. Sleeping currently."
+          }
+        ],
+        "summary": "Room No. 2: Patrick was in bed from the beginning. Head medications were given as prescribed. Comfortable positions were provided at different intervals. He is on an air mattress and it is working. Foot is on and the cold bed kept in place. Cabinol cream was applied over the sacrum and then drugs in situ. Hourly checks were made with no complaints. Sleeping currently."
+      },
+      {
+        "patientName": "3YM",
+        "transcriptions": [
+          {
+            "text": "Room number 3, he was walking through the corridor at the beginning and administered night medications. And the call bell placed and encouraged him to use it and the WHO checks the main danger. And currently he is sleeping, no complaints at the moment."
+          }
+        ],
+        "summary": "Resident in room 3 was walking through the corridor at the beginning. Night medications were administered. Call bell was placed and the resident was encouraged to use it. National Early Warning Score 2 checks were completed. Currently sleeping with no complaints at the moment."
+      },
+      {
+        "patientName": "4CM",
+        "transcriptions": [
+          {
+            "text": "Room No. 4, Keohol remains comfortable in the sitting room. All night, medication is given. After that, he was assisted to his room and provided a comfortable position in bed. Floor bed was placed in reach and was encouraged to use it. And the assistants were provided with low toileting needs. No complaints at the moment. Hourly checks were maintained and apparently sleeping."
+          }
+        ],
+        "summary": "Room No. 4: Keohol remained comfortable in the sitting room. All night, medication was given. After that, he was assisted to his room and positioned comfortably in bed. Floor bed was placed within reach and he was encouraged to use it. Assistance was provided with toileting needs. No complaints at the moment. Hourly checks were maintained and he was apparently sleeping."
+      }
+    ]
+  }
+]

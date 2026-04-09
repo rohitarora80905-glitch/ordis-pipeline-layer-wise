@@ -1,839 +1,1447 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  ORDIS — layer01.py                                                          ║
-║  Layer 01 · Name Correction                                                  ║
+║  ORDIS — layer01.py  (v5 · Learning + Irish Names)                           ║
+║  Layer 01 · Name Detection & Correction                                      ║
 ║                                                                              ║
-║  Input  : Raw voice-transcribed text                                         ║
-║  Output : Same text with nurse/patient names corrected to canonical form     ║
+║  Input  : Raw speech-to-text transcript                                      ║
+║  Output : (corrected_text, List[NameDetection])                              ║
 ║                                                                              ║
-║  Method : ml-IN phonetic normalisation → fuzzy + phonetic registry lookup   ║
-║           (Soundex, Metaphone, WRatio bijective token scoring)               ║
+║  ✦ 100 % LOCAL — zero LLM calls, zero external API calls.                   ║
 ║                                                                              ║
-║  API    : POST /api/layer01  (txt, accent, Ordis_ID)                         ║
+║  Detection stages (union):                                                   ║
+║    A — spaCy NER  (optional, graceful fallback)                              ║
+║    B — Capitalised-sequence heuristic  (always active)                       ║
+║    C — Sliding registry window  (always active)                              ║
+║                                                                              ║
+║  Correction engine (four layers):                                            ║
+║    L1 — Exact match                                                          ║
+║    L2 — Accent normalisation (ml-IN / Irish rule-set from shared.py)        ║
+║    L3 — Phonetic index (Soundex + Metaphone + NYSIIS, pre-built at start)   ║
+║    L4 — Fuzzy ranking (Jaro-Winkler + WRatio, bijective token alignment)    ║
+║                                                                              ║
+║  Fallback strategies:                                                        ║
+║    F1 — First-name-only matching (unique first name in registry)             ║
+║    F2 — Contamination filter (cross-span surname bleed removal)              ║
+║                                                                              ║
+║  ── NEW IN v5 ──────────────────────────────────────────────────────────── ║
+║                                                                              ║
+║  Learning Mechanism (LearningStore):                                         ║
+║    • Human feedback (confirm / reject) is persisted to JSON on disk.        ║
+║    • On each resolution, the store is consulted AFTER the normal pipeline:  ║
+║        - Confirmed correction  → confidence boosted / canonical overridden  ║
+║        - Rejected correction   → confidence penalised; suppressed if below  ║
+║                                   audit threshold                            ║
+║        - Confusion pair stored → future same-surface wrong-canonical cases  ║
+║                                   are rerouted to the correct canonical      ║
+║    • Thread-safe; atomic writes (write-to-tmp then rename).                 ║
+║    • Path (priority): arg → LAYER01_LEARN_PATH config → ~/.ordis/…         ║
+║    • Public API: record_feedback() — call from review/audit UI.             ║
+║                  get_learning_stats() — dashboard summary.                  ║
+║                  reset_learning()  — wipe store (testing only).             ║
+║                                                                              ║
+║  Irish Name Registry (irish_names.py):                                       ║
+║    • 80+ curated Irish surnames, 120 first names.                           ║
+║    • Phonetic variant map for Malayali-accented pronunciation of Irish names ║
+║      (e.g. "shivawn" → "Siobhán", "keeva" → "Caoimhe").                   ║
+║    • Loaded at startup and merged into the patient PhoneticIndex so that    ║
+║      Irish names are fuzzy-matched even if not yet enrolled in MongoDB.     ║
+║    • Controlled by config key LAYER01_IRISH_NAMES (default True).           ║
+║                                                                              ║
+║  API  : POST /api/layer01  (txt, accent, Ordis_ID)                           ║
+║         POST /api/layer01/feedback  (surface, proposed, accepted, …)        ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
-
-What this layer does
-─────────────────────
-  "Maacuus O'Rielly"  → "Marcus O'Reilly"
-  "Willeem Wooak"     → "William Oak"
-  "Nurs Dharanee"     → "Nurse Dharani"
-
-The registry is loaded from:
-  data/patients.csv  (column: name)
-  data/nurses.csv    (column: name)
-
-Names NOT found in the registry are left as-is (no hallucination risk).
-
-Design notes
-─────────────
-  All correction discovery is READ-ONLY (two-phase approach):
-    Phase 1 — collect a {wrong_form → canonical} map by scanning the text.
-    Phase 2 — apply every correction in a single regex pass.
-
-  This eliminates the position-drift and wrong-occurrence bugs that arise
-  when text is mutated mid-scan.
-
-  Corrections are applied longest-first so that "Mary Jane Smith" is not
-  partially shadowed by a shorter match for "Mary Jane".
-
-Bug-fix changelog (all fixes relative to the original)
-────────────────────────────────────────────────────────
-  FIX-1  _strip_punct now uses a boundary-only regex instead of
-         str.maketrans.  The old approach deleted ASCII apostrophe U+0027
-         from *anywhere* in the string, corrupting compound names such as
-         O'Brien → OBrien before they reached match_name.
-
-  FIX-2  New _clean_token() strips trailing possessive suffixes ('s, 's,
-         ʼs) from individual tokens before they are joined into a fragment.
-         Previously "Dharanee's" was passed verbatim to match_name as
-         "Dharanees" (after apostrophe deletion), tanking its fuzzy score.
-
-  FIX-3  Context-free scan now iterates window sizes (_MAX_WINDOW, 2, 1).
-         The original code skipped window_size=1 entirely, making single-
-         token misspelled names invisible when no trigger word preceded them.
-
-  FIX-4  Circular correction guard now maintains a lowercase-keyed mirror
-         dict (_final_map_lower) for membership tests.  The original check
-         ``c.canonical.lower() in final_map`` compared a lowercased string
-         against mixed-case dict keys and therefore never fired.
-
-  FIX-5  Short English stop words ("on", "at", "by", …) are now skipped
-         before any match_name call.  _MIN_FRAGMENT_LEN = 2 previously
-         allowed these 2-char tokens to reach the fuzzy matcher after a
-         trigger word, risking false-positive corrections.
-
-  FIX-6  New _normalise_apostrophes() maps curly (U+2019) and modifier-
-         letter (U+02BC) apostrophes to ASCII U+0027 *on the fragment only*
-         before match_name, so registry lookups are apostrophe-variant-
-         agnostic.  The original text is never mutated.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import threading
 import unicodedata
-from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+
+import jellyfish
+from rapidfuzz import fuzz
 
 from shared import (
     ConfigManager,
-    load_name_registry,
-    match_name,
+    _GR, _YL, _RE, _R, _B,
+    _strip_name,
     mlin_normalise_name,
+    load_name_registry,
 )
 
-__all__ = ["run", "Layer01Result", "NameCorrection"]
-
-log = logging.getLogger(__name__)
-
-
-# ── Tuneable constants ────────────────────────────────────────────────────────
-
-_MAX_WINDOW          = 3   # max tokens considered as a single name fragment
-_MIN_FRAGMENT_LEN    = 2   # fragments shorter than this are not sent to matcher
-_MIN_SCAN_FRAG_LEN   = 4   # stricter floor for context-free window scan
-_SCAN_THRESHOLD_BUMP = 5   # extra confidence required for trigger-less matches
-
-
-# ── Compiled patterns ─────────────────────────────────────────────────────────
-
-# Words that introduce a name in clinical transcripts.
-# Handles "Dr.", "Dr", "Mr.", "Mrs.", "Ms." etc.
-_NAME_TRIGGERS = re.compile(
-    r"\b(?:nurse|patient|resident|doctor|dr\.?|mr\.?|mrs\.?|ms\.?|staff)\b\s*",
-    re.IGNORECASE,
-)
-
-# Name-token pattern: matches a single name, including compound forms.
-# Handles: O'Brien  Mary-Jane  Ó'Súilleabháin  Van der Berg
-# Unicode letter range covers accented / non-ASCII names (Irish, Indian, etc.).
-_NAME_TOKEN_RE = re.compile(
-    r"[A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]+"
-    r"(?:[''\u2019\u02BC\-][A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]+)*"
-)
-
-# ── FIX-1: boundary-only punctuation stripper ─────────────────────────────────
-# Strips characters at the START and END of a fragment that are not Unicode
-# letters.  Interior characters (apostrophes in O'Brien, hyphens in Mary-Jane)
-# are deliberately preserved.
-#
-# Replaced the old str.maketrans approach which deleted ASCII apostrophe
-# U+0027 from *everywhere* in the string, corrupting compound names.
-_BOUNDARY_PUNCT_RE = re.compile(
-    r"^[^A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]+"
-    r"|[^A-Za-zÀ-ÖØ-öø-ÿ\u0100-\u024F]+$",
-    re.UNICODE,
-)
-
-# ── FIX-2: possessive-suffix stripper ────────────────────────────────────────
-# _NAME_TOKEN_RE is intentionally greedy: it treats the compound form
-# O'Brien as a single token, but that same greediness captures the
-# possessive suffix in "Dharanee's" as part of the token.
-# This regex strips the trailing 's (all apostrophe variants) from a
-# single token BEFORE it is joined into a fragment.
-_POSSESSIVE_RE = re.compile(r"[''\u2019\u02BC][Ss]$")
-
-# ── FIX-5: stop-word guard ────────────────────────────────────────────────────
-# Common English words that follow trigger words in clinical transcripts
-# but are NOT name fragments.  Without this guard, tokens like "on", "at",
-# "by" pass _MIN_FRAGMENT_LEN = 2 and reach match_name, risking a spurious
-# correction if any registry name fuzzy-scores above the threshold.
-_STOP_WORDS: FrozenSet[str] = frozenset({
-    # prepositions / articles / conjunctions (2-3 chars, most at-risk)
-    "an", "as", "at", "by", "do", "go", "he", "if", "in", "is", "it",
-    "me", "my", "no", "of", "on", "or", "so", "to", "up", "we",
-    "and", "are", "but", "did", "for", "had", "has", "her", "him",
-    "his", "how", "its", "let", "may", "nor", "not", "now", "off",
-    "our", "out", "own", "per", "put", "set", "she", "the", "too",
-    "use", "via", "was", "who", "yet",
-    # common 4-5 char words that appear after trigger words in transcripts
-    "also", "been", "both", "call", "came", "come", "done", "each",
-    "else", "even", "from", "gave", "give", "gone", "good", "have",
-    "here", "into", "just", "keep", "left", "like", "made", "make",
-    "more", "most", "much", "must", "need", "next", "once", "only",
-    "over", "said", "same", "seen", "self", "some", "soon", "such",
-    "take", "than", "that", "them", "then", "they", "this", "thus",
-    "time", "took", "upon", "used", "very", "well", "went", "were",
-    "what", "when", "will", "with", "your",
-    # clinical context words that legitimately follow trigger words
-    "room", "ward", "duty", "note", "form", "care", "team", "data",
-    "file", "case", "unit", "home", "rota", "rota", "plan", "help",
-    "call", "family", "meeting", "report", "review",
-})
-
-
-# ── Data structures ───────────────────────────────────────────────────────────
-
-@dataclass(frozen=True)
-class NameCorrection:
-    """
-    Immutable record of a single name correction.
-
-    Attributes
-    ----------
-    original   : The misspelled/misheard fragment found in the transcript.
-    canonical  : The authoritative registry form.
-    confidence : Fuzzy-match confidence score (0–100).
-    source     : How the correction was found.
-                 One of: "trigger:nurse", "trigger:patient",
-                          "scan:nurse",    "scan:patient".
-    """
-    original:   str
-    canonical:  str
-    confidence: float
-    source:     str
-
-    def __str__(self) -> str:
-        return (
-            f"'{self.original}' → '{self.canonical}' "
-            f"(conf {self.confidence:.0f}, {self.source})"
-        )
-
-
-@dataclass
-class Layer01Result:
-    """
-    Full structured result from Layer 01.
-
-    Iterable as ``(corrected_text, list_of_(orig, canonical) tuples)``
-    for backward compatibility with callers that do::
-
-        out, corrections = run(text)
-    """
-    text:              str
-    corrections:       List[NameCorrection] = field(default_factory=list)
-    accent_normalised: bool                 = False
-
-    # ── Backward-compatible 2-tuple unpacking ─────────────────────────────────
-    def __iter__(self) -> Iterator:
-        yield self.text
-        yield [(c.original, c.canonical) for c in self.corrections]
-
-    # ── Convenience helpers ───────────────────────────────────────────────────
-    @property
-    def correction_map(self) -> Dict[str, str]:
-        """Return {original: canonical} for all corrections."""
-        return {c.original: c.canonical for c in self.corrections}
-
-    @property
-    def was_modified(self) -> bool:
-        return bool(self.corrections) or self.accent_normalised
-
-
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
-def _normalise_unicode(text: str) -> str:
-    """
-    NFC-normalise *text* so composed and decomposed Unicode forms compare equal.
-    e.g. ``e\\u0301`` (e + combining acute) → ``é`` (U+00E9).
-    """
-    return unicodedata.normalize("NFC", text)
-
-
-def _strip_punct(s: str) -> str:
-    """
-    Remove leading/trailing non-letter characters from a name fragment.
-
-    FIX-1: Replaces the old ``str.maketrans`` approach, which deleted the
-    ASCII apostrophe from *all positions* in the string (including the
-    interior of ``O'Brien``).  This regex only touches the fragment's
-    boundaries; interior apostrophes and hyphens are preserved.
-    """
-    return _BOUNDARY_PUNCT_RE.sub("", s)
-
-
-def _clean_token(token: str) -> str:
-    """
-    Strip a trailing possessive suffix (``'s``, ``'s``, ``ʼs``) from a
-    single name token.
-
-    FIX-2: ``_NAME_TOKEN_RE`` treats ``Dharanee's`` as one token because
-    the apostrophe-plus-letter compound form is part of its grammar.  Before
-    the token is joined into a fragment and sent to ``match_name``, the
-    possessive marker must be removed so that the fuzzy scorer sees
-    ``Dharanee`` rather than ``Dharanee's`` (or the even worse ``Dharanees``
-    produced by the old punctuation-stripping approach).
-    """
-    return _POSSESSIVE_RE.sub("", token)
-
-
-def _normalise_apostrophes(s: str) -> str:
-    """
-    Map all Unicode apostrophe variants to the ASCII apostrophe (U+0027)
-    on a *fragment string* before it is passed to ``match_name``.
-
-    FIX-6: Registry entries typically store the ASCII form ``O'Brien``.
-    Voice-transcription engines may emit the curly quotation mark U+2019
-    or the Unicode modifier letter apostrophe U+02BC.  Without this step
-    the fuzzy scorer must bridge a Unicode code-point difference in addition
-    to the phonetic difference, depressing the confidence score.
-
-    This function is intentionally applied only to the fragment copy; the
-    original transcript text is never mutated.
-    """
-    return s.replace("\u2019", "'").replace("\u02BC", "'")
-
-
-def _extract_name_tokens(text: str, max_tokens: int = _MAX_WINDOW) -> List[str]:
-    """
-    Extract up to *max_tokens* name-like tokens from the **start** of *text*.
-
-    Compound name forms are treated as a single token:
-      - Apostrophe variants: O'Brien, O\\u2019Brien, O\\u02BCBrien
-      - Hyphenated:          Mary-Jane, Van-der-Berg
-      - Accented:            Seán, Áine, Dhruv
-    """
-    return _NAME_TOKEN_RE.findall(text)[:max_tokens]
-
-
-def _build_replacement_pattern(fragments: List[str]) -> Optional[re.Pattern]:
-    """
-    Compile a single regex that matches any of *fragments* as a whole-word
-    occurrence (case-insensitive).
-
-    Fragments are sorted longest-first so that "Mary Jane Smith" is never
-    partially shadowed by "Mary Jane".
-
-    Returns ``None`` when *fragments* is empty.
-    """
-    if not fragments:
-        return None
-
-    # Sort longest first to prevent shorter matches shadowing longer ones.
-    alts = sorted(fragments, key=len, reverse=True)
-    # Use Unicode-aware word boundaries via lookbehind / lookahead.
-    # \W matches non-word; ^ / $ anchor to string edges.
-    pattern = "|".join(
-        r"(?<!\w)" + re.escape(f) + r"(?!\w)" for f in alts
-    )
-    return re.compile(pattern, re.IGNORECASE | re.UNICODE)
-
-
-def _apply_corrections(text: str, correction_map: Dict[str, str]) -> str:
-    """
-    Replace **all** occurrences of every key in *correction_map* with its
-    canonical value in a **single regex pass**.
-
-    This is the critical correctness guarantee: text is never mutated
-    between discovery and application, so there is no position-drift
-    and no risk of a replacement being used as input for another match.
-    """
-    if not correction_map:
-        return text
-
-    pat = _build_replacement_pattern(list(correction_map.keys()))
-    if pat is None:
-        return text
-
-    # Build a normalised lookup so the replacer is case-insensitive.
-    lower_map: Dict[str, str] = {k.lower(): v for k, v in correction_map.items()}
-
-    def _replacer(m: re.Match) -> str:
-        return lower_map.get(m.group(0).lower(), m.group(0))
-
-    return pat.sub(_replacer, text)
-
-
-# ── Phase 1: READ-ONLY correction discovery ───────────────────────────────────
-
-def _collect_trigger_corrections(
-    text:      str,
-    registry:  List[str],
-    threshold: int,
-    label:     str,
-) -> List[NameCorrection]:
-    """
-    Scan *text* for trigger words (Nurse, Patient, Resident, …) and attempt
-    to resolve the following 1–3 name tokens against *registry*.
-
-    **This function is strictly read-only** — it never modifies *text*.
-
-    Algorithm
-    ---------
-    For each trigger match, extract up to ``_MAX_WINDOW`` tokens and try
-    windows from longest to shortest.  Stop at the first window that
-    produces a registry match (regardless of whether a correction is
-    needed), to avoid a shorter partial match overriding a full-name match.
-
-    Parameters
-    ----------
-    text      : The (possibly accent-normalised) transcript text.
-    registry  : Flat list of canonical names to match against.
-    threshold : Minimum fuzzy-match confidence (0–100).
-    label     : "nurse" or "patient" (for logging/source tagging).
-
-    Returns
-    -------
-    List of :class:`NameCorrection` objects (may be empty).
-    """
-    corrections: List[NameCorrection] = []
-    seen_lower:  Set[str]             = set()   # avoid duplicate entries
-
-    for m in _NAME_TRIGGERS.finditer(text):
-        after_trigger = text[m.end():]
-        raw_tokens = _extract_name_tokens(after_trigger, _MAX_WINDOW)
-
-        if not raw_tokens:
-            log.debug(
-                "L1 %s: trigger at pos %d — no name tokens follow", label, m.start()
-            )
-            continue
-
-        # FIX-2: strip possessive suffix from each token before building windows.
-        tokens = [_clean_token(t) for t in raw_tokens]
-        # Remove any token that became empty after possessive stripping.
-        tokens = [t for t in tokens if t]
-
-        if not tokens:
-            continue
-
-        # Try progressively shorter windows until a registry match is found.
-        matched = False
-        for window_size in range(min(_MAX_WINDOW, len(tokens)), 0, -1):
-            raw_frag = " ".join(tokens[:window_size])
-            # FIX-1: boundary-only strip (interior apostrophes preserved).
-            fragment = _strip_punct(raw_frag)
-
-            if len(fragment) < _MIN_FRAGMENT_LEN:
-                continue
-
-            # FIX-5: skip common English words that follow trigger words but
-            # are not names.  Without this guard, words like "on", "at", "by"
-            # reach match_name and can produce spurious corrections.
-            if fragment.lower() in _STOP_WORDS:
-                log.debug(
-                    "L1 %s trigger: skipping stop word '%s'", label, fragment
-                )
-                continue
-
-            frag_key = fragment.lower()
-            if frag_key in seen_lower:
-                matched = True
-                break
-
-            # FIX-6: normalise apostrophe variants on the fragment copy only
-            # so that "O'Bryen" (curly) matches registry entry "O'Brien" (ASCII).
-            match_fragment = _normalise_apostrophes(fragment)
-
-            resolved, conf = match_name(match_fragment, registry, threshold=threshold)
-
-            if resolved is None:
-                # No match even at this threshold; try a smaller window.
-                continue
-
-            if resolved.lower() == frag_key:
-                log.debug(
-                    "L1 %s trigger: '%s' already canonical (conf %.0f)",
-                    label, fragment, conf,
-                )
-            else:
-                log.debug(
-                    "L1 %s trigger: '%s' → '%s' (conf %.0f)",
-                    label, fragment, resolved, conf,
-                )
-                corrections.append(NameCorrection(
-                    original   = fragment,
-                    canonical  = resolved,
-                    confidence = conf,
-                    source     = f"trigger:{label}",
-                ))
-
-            seen_lower.add(frag_key)
-            matched = True
-            break   # Do not try a shorter window once any match found.
-
-        if not matched:
-            log.debug(
-                "L1 %s: trigger at pos %d — no registry match for tokens %r",
-                label, m.start(), tokens,
-            )
-
-    return corrections
-
-
-def _collect_scan_corrections(
-    text:             str,
-    patient_registry: List[str],
-    nurse_registry:   List[str],
-    threshold:        int,
-    known_originals:  Set[str],
-    known_canonicals: Set[str],
-) -> List[NameCorrection]:
-    """
-    Context-free window scan: slide a 1–3 token window over *text* and
-    correct fragments that fuzzy-match a registry entry but were **not**
-    already caught by the trigger scan.
-
-    A higher confidence floor (``threshold + _SCAN_THRESHOLD_BUMP``) is
-    enforced here to limit false positives from context-free matching.
-
-    Parameters
-    ----------
-    text              : Text to scan (never modified).
-    patient_registry  : Canonical patient names.
-    nurse_registry    : Canonical nurse names.
-    threshold         : Base confidence threshold from config.
-    known_originals   : Lower-cased fragments already resolved by trigger scan.
-    known_canonicals  : Lower-cased canonical forms already in the correction
-                        map (to avoid re-processing them as new fragments).
-
-    Returns
-    -------
-    List of :class:`NameCorrection` objects (may be empty).
-
-    Notes
-    -----
-    FIX-3: Window sizes now include 1 (previously only 3 and 2 were tried).
-    Single-token misspelled names that appear without a preceding trigger
-    word were entirely invisible to the context-free scan before this fix.
-
-    FIX-2: Possessive suffixes are stripped from tokens before joining.
-
-    FIX-5: Stop words are skipped before match_name is called.
-
-    FIX-6: Apostrophe variants on the fragment are normalised before matching.
-    """
-    corrections:  List[NameCorrection] = []
-    seen_lower:   Set[str]             = set()
-    scan_thresh   = threshold + _SCAN_THRESHOLD_BUMP
-
-    raw_tokens = _NAME_TOKEN_RE.findall(text)
-    # FIX-2: strip possessive suffix from every token once, up front.
-    tokens = [_clean_token(t) for t in raw_tokens]
-    tokens = [t for t in tokens if t]   # drop any that became empty
-
-    # FIX-3: include window_size=1 so isolated single-token misspellings are
-    # caught.  Iterate longest-first to match multi-word names before parts.
-    for window_size in (_MAX_WINDOW, 2, 1):
-        for i in range(len(tokens) - window_size + 1):
-            raw_frag = " ".join(tokens[i : i + window_size])
-            # FIX-1: boundary-only strip.
-            fragment = _strip_punct(raw_frag)
-
-            if len(fragment) < _MIN_SCAN_FRAG_LEN:
-                continue
-
-            # FIX-5: skip stop words in the context-free scan too.
-            if fragment.lower() in _STOP_WORDS:
-                continue
-
-            frag_key = fragment.lower()
-
-            # Skip: already seen in this scan
-            if frag_key in seen_lower:
-                continue
-            # Skip: already handled by trigger scan
-            if frag_key in known_originals:
-                seen_lower.add(frag_key)
-                continue
-            # Skip: this IS a canonical form we already know about
-            # (prevents re-correcting a name we just resolved)
-            if frag_key in known_canonicals:
-                seen_lower.add(frag_key)
-                continue
-
-            # FIX-6: apostrophe normalisation on the fragment copy.
-            match_fragment = _normalise_apostrophes(fragment)
-
-            # Patient registry has priority in scan (broader population).
-            for registry, lbl in (
-                (patient_registry, "patient"),
-                (nurse_registry,   "nurse"),
-            ):
-                resolved, conf = match_name(
-                    match_fragment, registry, threshold=scan_thresh
-                )
-
-                if resolved is None:
-                    continue
-
-                if resolved.lower() == frag_key:
-                    log.debug(
-                        "L1 scan %s: '%s' already canonical (conf %.0f)",
-                        lbl, fragment, conf,
-                    )
-                    seen_lower.add(frag_key)
-                    break
-
-                log.debug(
-                    "L1 scan %s: '%s' → '%s' (conf %.0f)",
-                    lbl, fragment, resolved, conf,
-                )
-                corrections.append(NameCorrection(
-                    original   = fragment,
-                    canonical  = resolved,
-                    confidence = conf,
-                    source     = f"scan:{lbl}",
-                ))
-                seen_lower.add(frag_key)
-                break   # Stop at first registry that gives a match.
-
-    return corrections
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def run(
-    text:     str,
-    accent:   str = "ml_In",
-    ordis_id: str = "",
-    cfg:      Optional[ConfigManager] = None,
-    mongo_db: Optional[Any]           = None,
-) -> Layer01Result:
-    """
-    Layer 01 — Name Correction.
-
-    Corrects nurse and patient names in a raw clinical voice transcript by
-    fuzzy-matching against authoritative name registries.
-
-    Parameters
-    ----------
-    text      : Raw voice-transcribed clinical note.
-    accent    : Accent profile (default ``'ml_In'`` — Malayalam-influenced
-                English; governs which phonetic normalisation rules apply).
-    ordis_id  : Session / request ID used for structured log correlation.
-                No state is written in L1.
-    cfg       : :class:`ConfigManager` instance.  Created from ``config.yaml``
-                automatically if not supplied.
-    mongo_db  : Optional MongoDB handle forwarded to :func:`load_name_registry`.
-
-    Returns
-    -------
-    :class:`Layer01Result`
-        Iterable as ``(corrected_text, [(orig, canonical), …])`` for
-        backward compatibility.
-
-    Raises
-    ------
-    TypeError
-        If *text* is not a ``str``.
-
-    Notes
-    -----
-    Edge cases handled
-    ~~~~~~~~~~~~~~~~~~
-    * Empty / whitespace-only input → returned unchanged, zero corrections.
-    * Non-ASCII / accented names (Irish, Indian) → Unicode-aware tokenisation.
-    * Compound names with apostrophes or hyphens → treated as a single token.
-    * Trailing punctuation on fragments (``"Dharani."``).
-    * Possessive suffixes (``"Dharanee's"``) → possessive stripped before match.
-    * Apostrophe variants (curly, modifier-letter) normalised before match.
-    * Same misspelling under multiple trigger words → deduplicated.
-    * Misspelling appearing multiple times → **all** occurrences replaced.
-    * Empty registries → short-circuits with a warning, no crash.
-    * Corrections applied via a **single** regex pass (no position-drift,
-      no wrong-occurrence substitution, no cascading replacements).
-    * Circular corrections (A→B, B→C) detected and skipped with a warning.
-    """
-    tag = ordis_id or "?"
-
-    # ── Input validation ──────────────────────────────────────────────────────
-    if not isinstance(text, str):
-        raise TypeError(
-            f"layer01.run: 'text' must be str, got {type(text).__name__!r}"
-        )
-    if not text.strip():
-        log.info("L1 [%s]: empty/whitespace input — returning unchanged", tag)
-        return Layer01Result(text=text)
-
-    text = _normalise_unicode(text)
-
-    # ── Config & registry ─────────────────────────────────────────────────────
-    if cfg is None:
-        cfg = ConfigManager()
-
-    threshold = cfg.get_name_match_threshold()
-    patient_names, nurse_names = load_name_registry(cfg, mongo_db=mongo_db)
-
-    if not patient_names and not nurse_names:
-        log.warning(
-            "L1 [%s]: both name registries are empty — no corrections possible", tag
-        )
-        return Layer01Result(text=text)
-
-    # ── Step 1: ml-IN phonetic normalisation ──────────────────────────────────
-    # Transforms common Malayalam-accent mishearings at the token level
-    # (e.g. "Keeran" → "Ciaran", "Shobha" → "Siobha") before fuzzy matching.
-    # Applied to the whole text so downstream token extraction sees normalised
-    # forms; the original text is preserved in `text` for diffing.
-    text_norm      = mlin_normalise_name(text)
-    accent_changed = text_norm != text
-    if accent_changed:
-        log.debug("L1 [%s]: ml-IN normalisation modified text", tag)
-
-    # ── Step 2: Trigger-based name collection (READ-ONLY) ─────────────────────
-    # Both registries are scanned; nurse corrections take precedence when the
-    # same fragment is resolved by both (explicit "Nurse X" phrasing is a
-    # stronger signal than an incidental name match in the patient registry).
-    nurse_corr   = _collect_trigger_corrections(
-        text_norm, nurse_names,   threshold=threshold, label="nurse"
-    )
-    patient_corr = _collect_trigger_corrections(
-        text_norm, patient_names, threshold=threshold, label="patient"
-    )
-
-    # Merge with deduplication: first occurrence (nurse priority) wins.
-    seen_originals: Set[str]                  = set()
-    trigger_corrections: List[NameCorrection] = []
-    for c in nurse_corr + patient_corr:
-        key = c.original.lower()
-        if key not in seen_originals:
-            trigger_corrections.append(c)
-            seen_originals.add(key)
-
-    trigger_map = {c.original: c.canonical for c in trigger_corrections}
-
-    # ── Step 3: Context-free window scan (READ-ONLY) ──────────────────────────
-    # Catches names mentioned without a trigger word (e.g. "Recording for
-    # Willeem Wooak: …").  Uses a stricter confidence threshold to compensate
-    # for the lack of structural context.
-    known_originals  = {k.lower() for k in trigger_map}
-    known_canonicals = {v.lower() for v in trigger_map.values()}
-
-    scan_corrections = _collect_scan_corrections(
-        text_norm,
-        patient_registry = patient_names,
-        nurse_registry   = nurse_names,
-        threshold        = threshold,
-        known_originals  = known_originals,
-        known_canonicals = known_canonicals,
-    )
-
-    # ── Step 4: Deduplicate and finalise correction map ───────────────────────
-    # FIX-4: The original code checked ``c.canonical.lower() in final_map``
-    # to detect circular corrections, but final_map uses mixed-case originals
-    # as keys.  A lowercase string can never be found in a mixed-case dict
-    # unless the key happens to already be lowercase, so the guard was
-    # effectively dead code.
-    #
-    # Fix: maintain _final_map_lower as a parallel lowercase-keyed dict for
-    # all membership tests.  final_map (mixed-case keys) is used only for
-    # the regex replacement step where case must be preserved.
-    final_map:       Dict[str, str] = {}   # original-case key → canonical
-    _final_map_lower: Dict[str, str] = {}  # lowercase key    → canonical  (FIX-4)
-    all_corrections: List[NameCorrection] = []
-
-    for c in trigger_corrections + scan_corrections:
-        key = c.original.lower()
-
-        if key in _final_map_lower:
-            # Already have a correction for this fragment (earlier entry wins).
-            continue
-
-        # FIX-4: circular-correction guard using the lowercase mirror.
-        # Scenario: A→B is already in the map and now we're about to add B→C.
-        # Applying both would silently change A to C in one pass, which is
-        # almost certainly a registry artefact rather than a real correction.
-        canonical_lower = c.canonical.lower()
-        if canonical_lower in _final_map_lower:
-            log.warning(
-                "L1 [%s]: circular correction risk — '%s' is both a "
-                "canonical form and a pending original; skipping '%s' → '%s'",
-                tag, c.canonical, c.original, c.canonical,
-            )
-            continue
-
-        final_map[c.original]        = c.canonical
-        _final_map_lower[key]        = c.canonical
-        all_corrections.append(c)
-
-    # ── Step 5: Apply ALL corrections in a single regex pass ─────────────────
-    # Key correctness property: text_norm is never mutated between discovery
-    # and application.  Every correction fires against the same baseline text,
-    # so positions never drift and every occurrence is replaced — not just the
-    # first one.
-    result = _apply_corrections(text_norm, final_map)
-
-    # ── Summary logging ───────────────────────────────────────────────────────
-    if all_corrections:
-        log.info(
-            "L1 [%s]: %d correction(s) — %s",
-            tag,
-            len(all_corrections),
-            " | ".join(str(c) for c in all_corrections),
-        )
-    else:
-        log.info("L1 [%s]: no name corrections needed", tag)
-
-    return Layer01Result(
-        text              = result,
-        corrections       = all_corrections,
-        accent_normalised = accent_changed,
-    )
+logger = logging.getLogger(__name__)
+__all__ = [
+    "run", "run_simple", "get_role_map", "NameDetection",
+    # v5 learning API
+    "record_feedback", "get_learning_stats", "reset_learning",
+    "LearningStore",
+]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  CLI test
+#  Thresholds
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TIER_AUTO_SILENT: float = 0.92
+_TIER_AUTO_LOG:    float = 0.80
+_TIER_AUDIT:       float = 0.70
+
+_THRESH_NER:        int   = 72
+_THRESH_HEURISTIC:  int   = 80
+_THRESH_WINDOW:     int   = 75
+_THRESH_FIRST_NAME: float = 0.88
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Static word sets
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PII_TOKEN_RE = re.compile(
+    r"\b(?:PATIENT|NURSE|STAFF|DOCTOR|CARER|MANAGER|RESIDENT)\d+\b"
+)
+
+_HONORIFICS: FrozenSet[str] = frozenset({
+    "mr", "mrs", "ms", "miss", "dr", "prof", "professor",
+    "nurse", "patient", "resident", "carer", "sr", "jr",
+    "rev", "reverend", "sir", "dame",
+})
+
+_NER_STOPWORDS: FrozenSet[str] = frozenset({
+    "he", "she", "they", "him", "her", "his", "the", "a", "an",
+    "resident", "nurse", "patient", "doctor", "staff", "carer",
+    "room", "ward", "unit", "care", "home", "recording", "report",
+    "palliative", "approach", "corner", "bottle", "bed", "bandage",
+    "intake", "discomfort", "aggression", "behavior", "behaviour",
+    "confusion", "technique", "application", "condition", "decline",
+    "stated", "observed", "reported", "required", "performed",
+    "daily", "weekly", "monthly", "yesterday", "today", "tomorrow",
+    "morning", "afternoon", "evening", "overnight", "community",
+    "pain", "skin", "fall", "falls", "oral", "intake", "fluid",
+})
+
+_MIN_TOK: int = 2
+_MAX_ID:  int = 128
+_ID_RE        = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+
+_CAP_STOP: FrozenSet[str] = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday",
+    "saturday", "sunday", "january", "february", "march", "april",
+    "june", "july", "august", "september", "october", "november",
+    "december", "ward", "unit", "room", "ireland", "dublin",
+    "cork", "galway", "recording", "report", "staff", "carer",
+    "doctor", "nurse", "patient",
+})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  NameDetection (public output type)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class NameDetection:
+    """
+    Record of every name span detected and resolved by Layer 01.
+
+    was_corrected   True when the text was changed.
+    is_unresolved   True when no registry entry matched.
+    role            "patient" | "nurse" | "unknown" — FROM REGISTRY, never
+                    inferred from sentence position.
+    resolution_path "exact" | "accent_norm" | "phonetic_fuzzy" |
+                    "first_name_only" | "contamination_filter" |
+                    "learned_confirmed" | "learned_confusion" | "none"
+    """
+    surface_span:     str
+    canonical_name:   Optional[str]
+    role:             str
+    confidence:       float
+    was_corrected:    bool
+    is_unresolved:    bool
+    resolution_path:  str
+    tier:             str
+    detection_method: str
+    ordis_id:         str = ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PhoneticIndex
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class _Entry:
+    canonical: str
+    norm:      str
+    norm_mlin: str
+    tokens:    List[str]
+    first_tok: str
+    last_tok:  str
+    phon_keys: Set[str]
+
+
+class PhoneticIndex:
+    """
+    Pre-built inverted phonetic map (Soundex + Metaphone + NYSIIS).
+    Separate first-name index for F1 fallback.
+    """
+
+    def __init__(self, names: List[str], role: str) -> None:
+        self.role = role
+        self._entries:   List[_Entry]                    = []
+        self._phon_idx:  Dict[str, List[_Entry]]         = defaultdict(list)
+        self._first_idx: Dict[str, List[_Entry]]         = defaultdict(list)
+        self._build(names)
+
+    @staticmethod
+    def _codes(word: str) -> Set[str]:
+        w = re.sub(r"[^a-z]", "", word.lower())
+        if not w:
+            return set()
+        out: Set[str] = set()
+        for fn in (jellyfish.soundex, jellyfish.metaphone, jellyfish.nysiis):
+            try:
+                v = fn(w)
+                if v:
+                    out.add(v)
+            except Exception:
+                pass
+        return out
+
+    def _build(self, names: List[str]) -> None:
+        for canonical in names:
+            if not canonical or not isinstance(canonical, str):
+                continue
+            norm      = _strip_name(canonical)
+            norm_mlin = _strip_name(mlin_normalise_name(canonical))
+            tokens    = [t for t in norm.split() if len(t) >= _MIN_TOK]
+            if not tokens:
+                continue
+            all_keys: Set[str] = set()
+            for tok in set(tokens + norm_mlin.split()):
+                if len(tok) >= _MIN_TOK:
+                    all_keys |= self._codes(tok)
+            entry = _Entry(
+                canonical=canonical, norm=norm, norm_mlin=norm_mlin,
+                tokens=tokens, first_tok=tokens[0], last_tok=tokens[-1],
+                phon_keys=all_keys,
+            )
+            self._entries.append(entry)
+            for k in all_keys:
+                self._phon_idx[k].append(entry)
+            for k in self._codes(tokens[0]):
+                self._first_idx[k].append(entry)
+
+    def phonetic_candidates(self, word: str) -> List[_Entry]:
+        codes = self._codes(word)
+        seen: Set[int] = set()
+        out: List[_Entry] = []
+        for c in codes:
+            for e in self._phon_idx.get(c, []):
+                if id(e) not in seen:
+                    seen.add(id(e))
+                    out.append(e)
+        return out
+
+    def first_name_candidates(self, tok: str) -> List[_Entry]:
+        codes = self._codes(tok)
+        seen: Set[int] = set()
+        out: List[_Entry] = []
+        for c in codes:
+            for e in self._first_idx.get(c, []):
+                if id(e) not in seen:
+                    seen.add(id(e))
+                    out.append(e)
+        return out
+
+    def all_entries(self) -> List[_Entry]:
+        return self._entries
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Index cache (process-level singleton)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_idx_lock:  threading.Lock = threading.Lock()
+_idx_cache: Dict[int, Tuple[PhoneticIndex, PhoneticIndex]] = {}
+
+
+def _get_indexes(
+    patients: List[str],
+    nurses:   List[str],
+    include_irish: bool = True,
+) -> Tuple[PhoneticIndex, PhoneticIndex]:
+    """
+    Build (or return cached) phonetic indexes for patients and nurses.
+
+    When include_irish=True, the curated Irish name list from irish_names.py
+    is merged into the patient index.  Names already present in the live
+    registry are skipped to avoid duplication.
+    """
+    if include_irish:
+        try:
+            from irish_names import get_all_irish_names
+            irish = get_all_irish_names()
+            patient_norms = {_strip_name(p).lower() for p in patients}
+            extra = [n for n in irish
+                     if _strip_name(n).lower() not in patient_norms]
+            patients = patients + extra
+            logger.debug("L1: Irish names augmentation: +%d names.", len(extra))
+        except ImportError:
+            logger.warning("L1: irish_names.py not found — Irish name augmentation skipped.")
+        except Exception as exc:
+            logger.warning("L1: Irish name augmentation failed: %s", exc)
+
+    key = hash((tuple(patients), tuple(nurses)))
+    if key in _idx_cache:
+        return _idx_cache[key]
+    with _idx_lock:
+        if key in _idx_cache:
+            return _idx_cache[key]
+        logger.info("L1: Building phonetic indexes (%d p, %d n)…",
+                    len(patients), len(nurses))
+        pi, ni = PhoneticIndex(patients, "patient"), PhoneticIndex(nurses, "nurse")
+        _idx_cache[key] = (pi, ni)
+    return pi, ni
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Optional spaCy singleton
+# ─────────────────────────────────────────────────────────────────────────────
+
+_spacy_lock:  threading.Lock   = threading.Lock()
+_spacy_nlp:   Optional[object] = None
+_spacy_built: bool             = False
+
+
+def _get_spacy() -> Optional[object]:
+    global _spacy_nlp, _spacy_built
+    if _spacy_built:
+        return _spacy_nlp
+    with _spacy_lock:
+        if _spacy_built:
+            return _spacy_nlp
+        try:
+            import spacy  # type: ignore[import]
+            for m in ("en_core_web_lg", "en_core_web_trf", "en_core_web_sm"):
+                try:
+                    _spacy_nlp = spacy.load(m, disable=["parser", "lemmatizer"])
+                    logger.info("L1: spaCy '%s' loaded.", m)
+                    break
+                except OSError:
+                    continue
+            if _spacy_nlp is None:
+                logger.warning("L1: No spaCy English model found.")
+        except ImportError:
+            logger.warning("L1: spaCy not installed — NER disabled.")
+        _spacy_built = True
+    return _spacy_nlp
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Detection helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _strip_honorific(text: str) -> str:
+    toks = text.split()
+    if len(toks) <= 1:
+        return text
+    head = re.sub(r"[.\s]+$", "", toks[0]).lower()
+    return " ".join(toks[1:]) if head in _HONORIFICS else text
+
+
+def _is_pii(text: str) -> bool:
+    return bool(_PII_TOKEN_RE.fullmatch(text.strip()))
+
+
+def _dedup(spans: List[str]) -> List[str]:
+    spans = sorted(set(spans), key=len, reverse=True)
+    kept: List[str] = []
+    for s in spans:
+        sl = s.lower()
+        if not any(sl in k.lower() for k in kept):
+            kept.append(s)
+    return kept
+
+
+_CAP_RE = re.compile(
+    r"(?<!\w)"
+    r"(?:(?:[A-Z][a-z'\-]+|O\'[A-Z][a-z]+|Mc[A-Z][a-z]+|Mac[A-Z][a-z]+)"
+    r"(?:\s+(?:[A-Z][a-z'\-]+|O\'[A-Z][a-z]+|Mc[A-Z][a-z]+|Mac[A-Z][a-z]+)){0,3})"
+    r"(?!\w)"
+)
+
+
+def _detect_ner(text: str) -> List[str]:
+    nlp = _get_spacy()
+    if not nlp:
+        return []
+    try:
+        out = []
+        for ent in nlp(text).ents:
+            if ent.label_ == "PERSON":
+                s = ent.text.strip()
+                if (len(s) >= _MIN_TOK and s.lower() not in _NER_STOPWORDS
+                        and not _is_pii(s)):
+                    out.append(s)
+        return out
+    except Exception as exc:
+        logger.warning("L1: spaCy error: %s", exc)
+        return []
+
+
+def _detect_heuristic(text: str) -> List[str]:
+    out = []
+    for m in _CAP_RE.finditer(text):
+        s = m.group().strip()
+        if (len(s) >= _MIN_TOK and s.lower() not in _CAP_STOP
+                and not _is_pii(s)
+                and any(len(t) >= 3 for t in s.split())):
+            out.append(s)
+    return out
+
+
+def _detect_window(text: str, all_names: List[str]) -> List[str]:
+    from shared import find_names_in_text
+    return [sp for sp, _, _ in
+            find_names_in_text(text, all_names, threshold=_THRESH_WINDOW)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Scoring
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _score_span(norm_span: str, norm_mlin: str, entry: _Entry) -> float:
+    """Score normalised query against one entry. Returns 0–100."""
+    full_s = float(fuzz.WRatio(norm_span, entry.norm))
+    mlin_s = max(
+        float(fuzz.WRatio(norm_mlin, entry.norm_mlin)),
+        float(fuzz.WRatio(norm_mlin, entry.norm)),
+    )
+
+    ftoks = [t for t in norm_span.split() if len(t) >= _MIN_TOK]
+    ctoks = entry.tokens
+    if not ftoks or not ctoks:
+        return max(full_s, mlin_s)
+
+    claimed: Set[int] = set()
+    tok_scores: List[float] = []
+
+    for ft in ftoks:
+        best = 0.0
+        best_i = -1
+        ft_codes = PhoneticIndex._codes(ft)
+        for ci, ct in enumerate(ctoks):
+            if ci in claimed:
+                continue
+            jw = jellyfish.jaro_winkler_similarity(ft, ct) * 100.0
+            wr = float(fuzz.WRatio(ft, ct))
+            ct_codes = PhoneticIndex._codes(ct)
+            boost = 8.0 if ft_codes & ct_codes else 0.0
+            s = max(jw, wr) + boost
+            if s > best:
+                best, best_i = s, ci
+        if best_i >= 0:
+            claimed.add(best_i)
+        tok_scores.append(best)
+
+    if min(tok_scores) < 55:
+        return 0.0
+
+    combined = (
+        (sum(tok_scores) / len(tok_scores)) * 0.45
+        + full_s * 0.25
+        + mlin_s * 0.30
+        - min(abs(len(ftoks) - len(ctoks)) * 5, 15)
+    )
+    return min(max(combined, 0.0), 100.0)
+
+
+def _best_match(
+    norm_span: str,
+    norm_mlin: str,
+    p_idx:     PhoneticIndex,
+    n_idx:     PhoneticIndex,
+    threshold: int,
+) -> Tuple[Optional[str], str, float]:
+    """
+    Score against both indexes.
+    Role = which index the winner came from (NEVER position-inferred).
+    """
+    best_s: float         = 0.0
+    best_c: Optional[str] = None
+    best_r: str           = ""
+
+    first_tok = (norm_span.split() or [norm_span])[0]
+
+    for idx in (p_idx, n_idx):
+        cands = idx.phonetic_candidates(first_tok) or idx.all_entries()
+        for e in cands:
+            s = _score_span(norm_span, norm_mlin, e)
+            if s > best_s:
+                best_s, best_c, best_r = s, e.canonical, idx.role
+
+    if best_s < threshold or best_c is None:
+        return None, "", round(best_s / 100, 3)
+    return best_c, best_r, round(best_s / 100, 3)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Fallback F1 — first-name-only
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _match_first_name(
+    first_tok: str,
+    p_idx:     PhoneticIndex,
+    n_idx:     PhoneticIndex,
+) -> Tuple[Optional[str], str, float]:
+    """
+    Match a single first-name token.
+    Returns a result only when EXACTLY ONE registry entry qualifies.
+    """
+    if len(first_tok) < 3:
+        return None, "", 0.0
+
+    hits: List[Tuple[str, str, float]] = []
+    seen: Set[str] = set()
+
+    for idx in (p_idx, n_idx):
+        for e in idx.first_name_candidates(first_tok):
+            jw = jellyfish.jaro_winkler_similarity(
+                first_tok.lower(), e.first_tok.lower()
+            )
+            if jw >= _THRESH_FIRST_NAME and e.canonical not in seen:
+                seen.add(e.canonical)
+                hits.append((e.canonical, idx.role, jw))
+
+    hits.sort(key=lambda x: -x[2])
+
+    if len(hits) == 1:
+        can, role, jw = hits[0]
+        return can, role, round(jw * 0.90, 3)   # 10 % partial-match penalty
+
+    return None, "", 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Fallback F2 — contamination filter
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _contamination_fix(
+    surface:          str,
+    p_idx:            PhoneticIndex,
+    n_idx:            PhoneticIndex,
+    claimed_surnames: Set[str],
+) -> Tuple[Optional[str], str, float, str]:
+    """
+    When a span fails full-match, remove tokens that are surnames already
+    claimed by earlier-resolved spans, then retry.
+
+    Example:
+      "Anne Thompson" fails.
+      claimed_surnames = {"thompson"} (from "Emma Thompson").
+      Clean tokens = ["anne"].
+      First-name-only → "Anne Kelly" (patient, unique match).
+    """
+    ms    = _strip_honorific(surface).strip()
+    toks  = [t for t in ms.split() if len(t) >= _MIN_TOK]
+    if not toks:
+        return None, "", 0.0, "none"
+
+    clean = [t for t in toks if t.lower() not in claimed_surnames]
+    if not clean or clean == toks:
+        return None, "", 0.0, "none"
+
+    norm_clean = _strip_name(" ".join(clean))
+    mlin_clean = _strip_name(mlin_normalise_name(" ".join(clean)))
+
+    if len(clean) == 1:
+        can, role, conf = _match_first_name(norm_clean, p_idx, n_idx)
+        if can:
+            return can, role, conf, "contamination_filter"
+    else:
+        can, role, conf = _best_match(
+            norm_clean, mlin_clean, p_idx, n_idx, _THRESH_HEURISTIC
+        )
+        if can:
+            return can, role, conf, "contamination_filter"
+
+    return None, "", 0.0, "none"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Core per-span resolution
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve(
+    surface:          str,
+    p_idx:            PhoneticIndex,
+    n_idx:            PhoneticIndex,
+    is_ner:           bool,
+    claimed_surnames: Set[str],
+) -> Tuple[Optional[str], str, float, str]:
+    """
+    Resolve a surface span to (canonical, role, conf, resolution_path).
+    Returns (None, "unknown", conf, "none") if unresolvable.
+    Role is ALWAYS from registry — never inferred from sentence position.
+    """
+    if _is_pii(surface):
+        return None, "", 0.0, "none"
+
+    ms = _strip_honorific(surface).strip()
+    if len(ms) < _MIN_TOK or ms.lower() in _NER_STOPWORDS:
+        return None, "", 0.0, "none"
+
+    norm  = _strip_name(ms)
+    mlin  = _strip_name(mlin_normalise_name(ms))
+
+    # L1: exact
+    for idx in (p_idx, n_idx):
+        for e in idx.all_entries():
+            if norm in (e.norm, e.norm_mlin):
+                return e.canonical, idx.role, 1.0, "exact"
+
+    # L2: accent-normalised exact
+    for idx in (p_idx, n_idx):
+        for e in idx.all_entries():
+            if mlin in (e.norm, e.norm_mlin):
+                return e.canonical, idx.role, 0.97, "accent_norm"
+
+    # L3+L4: phonetic + fuzzy
+    thresh = _THRESH_NER if is_ner else _THRESH_HEURISTIC
+    can, role, conf = _best_match(norm, mlin, p_idx, n_idx, thresh)
+    if can:
+        return can, role, conf, "phonetic_fuzzy"
+
+    # F1: first-name-only
+    toks = [t for t in norm.split() if len(t) >= _MIN_TOK]
+    if toks:
+        can_fn, role_fn, conf_fn = _match_first_name(toks[0], p_idx, n_idx)
+        if can_fn:
+            return can_fn, role_fn, conf_fn, "first_name_only"
+
+    # F2: contamination filter
+    can_cf, role_cf, conf_cf, path_cf = _contamination_fix(
+        surface, p_idx, n_idx, claimed_surnames
+    )
+    if can_cf:
+        return can_cf, role_cf, conf_cf, path_cf
+
+    return None, "unknown", conf, "none"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Text replacement
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _replace(text: str, surface: str, canonical: str) -> str:
+    if surface.lower() == canonical.lower():
+        return text
+    pat = (
+        r"(?<![a-zA-Z0-9'\-])"
+        + re.escape(surface)
+        + r"(?![a-zA-Z0-9'\-]|(?:'\w))"
+    )
+    return re.sub(pat, lambda _: canonical, text, flags=re.IGNORECASE)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _validate_id(ordis_id: str) -> None:
+    if not ordis_id:
+        return
+    if len(ordis_id) > _MAX_ID:
+        raise ValueError(f"Ordis_ID too long ({len(ordis_id)} chars).")
+    if not _ID_RE.fullmatch(ordis_id):
+        raise ValueError(f"Ordis_ID '{ordis_id}' contains invalid characters.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ▓▓  LEARNING STORE  ▓▓
+#
+#  Industry-grade feedback persistence engine.
+#
+#  Architecture
+#  ────────────
+#  • Corrections are written to a JSON file after every feedback call
+#    (atomic via tmp-file + rename → safe against process crash mid-write).
+#  • Process-level singleton; thread-safe via a single reentrant lock.
+#  • Applied AFTER the normal resolution pipeline, so the core algorithm
+#    is unchanged — learning is a pure override/boost/penalty layer.
+#
+#  JSON schema (schema_version = 1)
+#  ─────────────────────────────────
+#  {
+#    "schema_version": 1,
+#    "confirmed": {
+#      "dharni kumar": {"canonical": "Dharani Kumar", "role": "nurse"}
+#    },
+#    "rejected": {
+#      "anne kelly": ["Anne Thompson"]
+#    },
+#    "confusion_pairs": {
+#      "John Doyle": {"correct": "John Murphy", "role": "patient"}
+#    },
+#    "miss_counts": {
+#      "Marcus O'Reilly": 3
+#    },
+#    "total_feedback": 47,
+#    "last_updated": "2026-04-09T10:30:00.123456"
+#  }
+#
+#  Confidence adjustments applied in apply():
+#    Confirmed match  → +_CONF_BOOST  (capped at 0.99)
+#    Override         → _CONF_OVERRIDE (0.95, fixed)
+#    Confusion pair   → +_CONF_CONFUSION_BOOST (0.03)
+#    Rejected match   → -_CONF_PENALTY; if result < _TIER_AUDIT → suppressed
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LearningStore:
+    """
+    Thread-safe, file-backed learning store for Layer 01.
+
+    Usage
+    -----
+    Instantiated once per process (singleton via _get_learn_store()).
+    Consume via the module-level record_feedback() function.
+
+    Direct instantiation is supported for testing / custom paths.
+    """
+
+    _SCHEMA             = 1
+    _DEFAULT_PATH       = Path.home() / ".ordis" / "layer01_learn.json"
+    _CONF_BOOST         = 0.06    # added when confirmed match agrees
+    _CONF_OVERRIDE      = 0.95    # used when overriding with stored canonical
+    _CONF_CONFUSION_BOOST = 0.03  # added when confusion pair reroutes
+    _CONF_PENALTY       = 0.40    # subtracted when candidate is in rejected list
+
+    def __init__(
+        self,
+        path: Optional[Path] = None,
+        cfg:  Optional[ConfigManager] = None,
+    ) -> None:
+        cfg_path: Optional[str] = None
+        if cfg is not None:
+            try:
+                cfg_path = cfg.get("LAYER01_LEARN_PATH")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        self._path: Path = Path(path or cfg_path or self._DEFAULT_PATH)
+        self._lock = threading.Lock()
+        self._data: Dict = self._load()
+
+    # ── Persistence ──────────────────────────────────────────────────────────
+
+    def _blank(self) -> Dict:
+        return {
+            "schema_version": self._SCHEMA,
+            "confirmed":       {},   # surface_lower → {canonical, role}
+            "rejected":        {},   # surface_lower → [canonical, ...]
+            "confusion_pairs": {},   # wrong_canonical → {correct, role}
+            "miss_counts":     {},   # canonical → int
+            "total_feedback":  0,
+            "last_updated":    "",
+        }
+
+    def _load(self) -> Dict:
+        try:
+            if self._path.exists():
+                with self._path.open("r", encoding="utf-8") as fh:
+                    d = json.load(fh)
+                if isinstance(d, dict) and d.get("schema_version") == self._SCHEMA:
+                    logger.info(
+                        "L1-learn: Store loaded from '%s' (%d confirmed, %d rejected).",
+                        self._path,
+                        len(d.get("confirmed", {})),
+                        len(d.get("rejected", {})),
+                    )
+                    return d
+                logger.warning("L1-learn: Schema mismatch in '%s' — resetting.", self._path)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("L1-learn: Load error (%s) — starting fresh.", exc)
+        return self._blank()
+
+    def _save(self) -> None:
+        """Atomic write: temp file → rename."""
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_suffix(".tmp")
+            with tmp.open("w", encoding="utf-8") as fh:
+                json.dump(self._data, fh, indent=2, ensure_ascii=False)
+            tmp.replace(self._path)
+        except Exception as exc:
+            logger.error("L1-learn: Save failed: %s", exc)
+
+    # ── Write API ─────────────────────────────────────────────────────────────
+
+    def record(
+        self,
+        surface:   str,
+        proposed:  str,
+        accepted:  bool,
+        role:      str           = "",
+        correct:   Optional[str] = None,
+        corr_role: Optional[str] = None,
+    ) -> None:
+        """
+        Persist one piece of human feedback.
+
+        Parameters
+        ----------
+        surface   : Raw surface span as it appeared in the transcript.
+        proposed  : Canonical name Layer 01 proposed.
+        accepted  : True = human confirmed it is correct.
+        role      : Registry role of the proposed canonical.
+        correct   : If accepted=False and the true name is known, supply it.
+        corr_role : Role of the correct canonical (when correct is given).
+        """
+        sl = surface.strip().lower()
+        import datetime
+
+        with self._lock:
+            if accepted:
+                # ── Confirm ──────────────────────────────────────────────────
+                self._data["confirmed"][sl] = {"canonical": proposed, "role": role}
+                # Clear any stale rejection for this (surface, proposed) pair
+                rej_list = self._data["rejected"].get(sl, [])
+                if proposed in rej_list:
+                    rej_list.remove(proposed)
+                logger.debug("L1-learn: CONFIRMED '%s' → '%s'.", surface, proposed)
+
+            else:
+                # ── Reject ───────────────────────────────────────────────────
+                rej_list = self._data["rejected"].setdefault(sl, [])
+                if proposed not in rej_list:
+                    rej_list.append(proposed)
+
+                # Increment miss count for the wrong canonical
+                mc = self._data["miss_counts"]
+                mc[proposed] = mc.get(proposed, 0) + 1
+
+                if correct:
+                    # Store confusion pair so future calls reroute automatically
+                    self._data["confusion_pairs"][proposed] = {
+                        "correct": correct,
+                        "role":    corr_role or "",
+                    }
+                    # Also record the correct mapping as confirmed
+                    self._data["confirmed"][sl] = {
+                        "canonical": correct,
+                        "role":      corr_role or "",
+                    }
+                    logger.debug(
+                        "L1-learn: REJECTED '%s'→'%s', confusion stored → '%s'.",
+                        surface, proposed, correct,
+                    )
+                else:
+                    logger.debug("L1-learn: REJECTED '%s'→'%s'.", surface, proposed)
+
+            self._data["total_feedback"] = self._data.get("total_feedback", 0) + 1
+            self._data["last_updated"] = datetime.datetime.utcnow().isoformat()
+            self._save()
+
+    # ── Read / Apply API ──────────────────────────────────────────────────────
+
+    def apply(
+        self,
+        surface: str,
+        can:     Optional[str],
+        role:    str,
+        conf:    float,
+        path:    str,
+    ) -> Tuple[Optional[str], str, float, str]:
+        """
+        Apply learned corrections to a resolution result.
+
+        Called immediately after _resolve() in run().  Operates in three
+        priority levels:
+
+        1. Confirmed override  — human previously confirmed a canonical for
+                                 this surface; use it (even if _resolve picked
+                                 something different).
+        2. Confusion pair      — _resolve returned a canonical that was
+                                 previously flagged as wrong; reroute to the
+                                 stored correct answer.
+        3. Rejection penalty   — _resolve returned a canonical in the rejected
+                                 list; reduce confidence; suppress if below
+                                 _TIER_AUDIT.
+
+        No lock needed here (reads only; writes go via record()).
+        """
+        sl = surface.strip().lower()
+        confirmed_entry = self._data["confirmed"].get(sl)
+        rejected_list   = self._data["rejected"].get(sl, [])
+        confusion       = self._data["confusion_pairs"]
+
+        # ── Level 1: confirmed override ───────────────────────────────────────
+        if confirmed_entry:
+            conf_can  = confirmed_entry["canonical"]
+            conf_role = confirmed_entry.get("role") or role
+
+            if can == conf_can:
+                # Algorithm already agreed with the human — boost confidence
+                boosted = min(conf + self._CONF_BOOST, 0.99)
+                return can, role, boosted, path + "+confirmed"
+            else:
+                # Algorithm disagreed — override silently
+                logger.debug(
+                    "L1-learn: '%s' → '%s' overridden by learning (was '%s').",
+                    surface, conf_can, can,
+                )
+                return conf_can, conf_role, self._CONF_OVERRIDE, "learned_confirmed"
+
+        # ── Level 2: confusion pair ───────────────────────────────────────────
+        if can and can in confusion:
+            cp     = confusion[can]
+            corr   = cp["correct"]
+            crole  = cp.get("role") or role
+            logger.debug(
+                "L1-learn: confusion pair '%s' → '%s' rerouted to '%s'.",
+                surface, can, corr,
+            )
+            return corr, crole, min(conf + self._CONF_CONFUSION_BOOST, 0.97), "learned_confusion"
+
+        # ── Level 3: rejection penalty ────────────────────────────────────────
+        if can and can in rejected_list:
+            penalised = conf - self._CONF_PENALTY
+            if penalised < _TIER_AUDIT:
+                logger.debug(
+                    "L1-learn: '%s'→'%s' suppressed (rejected, penalised conf=%.2f).",
+                    surface, can, penalised,
+                )
+                return None, "unknown", 0.0, "rejected_by_learning"
+            return can, role, max(penalised, 0.0), path + "+penalised"
+
+        # No learning signal — pass through unchanged
+        return can, role, conf, path
+
+    # ── Introspection ─────────────────────────────────────────────────────────
+
+    def stats(self) -> Dict:
+        """
+        Return a summary dict suitable for a monitoring dashboard.
+
+        Keys
+        ----
+        confirmed_count     : Number of confirmed surface→canonical mappings.
+        rejected_surfaces   : Number of surfaces with at least one rejection.
+        confusion_pairs     : Number of known wrong→right canonical redirects.
+        total_feedback      : Cumulative feedback calls.
+        most_confused       : Top 5 canonicals by miss count.
+        last_updated        : ISO-8601 timestamp of last write.
+        store_path          : Absolute path to the JSON file.
+        """
+        mc    = self._data.get("miss_counts", {})
+        top5  = sorted(mc.items(), key=lambda x: -x[1])[:5]
+        return {
+            "confirmed_count":   len(self._data.get("confirmed", {})),
+            "rejected_surfaces": len(self._data.get("rejected", {})),
+            "confusion_pairs":   len(self._data.get("confusion_pairs", {})),
+            "total_feedback":    self._data.get("total_feedback", 0),
+            "most_confused":     [{"canonical": k, "misses": v} for k, v in top5],
+            "last_updated":      self._data.get("last_updated", ""),
+            "store_path":        str(self._path),
+        }
+
+    def reset(self) -> None:
+        """
+        Wipe all learned data.  USE WITH CAUTION — irreversible.
+        Intended for test suites only.
+        """
+        with self._lock:
+            self._data = self._blank()
+            self._save()
+        logger.warning("L1-learn: Store reset to blank.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Process-level LearningStore singleton
+# ─────────────────────────────────────────────────────────────────────────────
+
+_learn_singleton_lock: threading.Lock    = threading.Lock()
+_learn_singleton:      Optional[LearningStore] = None
+
+
+def _get_learn_store(cfg: Optional[ConfigManager] = None) -> LearningStore:
+    """Return (or lazily create) the process-level LearningStore."""
+    global _learn_singleton
+    if _learn_singleton is not None:
+        return _learn_singleton
+    with _learn_singleton_lock:
+        if _learn_singleton is None:
+            _learn_singleton = LearningStore(cfg=cfg)
+    return _learn_singleton
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Public Learning API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def record_feedback(
+    surface:            str,
+    proposed_canonical: str,
+    accepted:           bool,
+    role:               str                     = "",
+    correct_canonical:  Optional[str]           = None,
+    correct_role:       Optional[str]           = None,
+    ordis_id:           str                     = "",
+    cfg:                Optional[ConfigManager] = None,
+) -> None:
+    """
+    Record human feedback on a Layer 01 correction.
+
+    Call this from your review / audit UI whenever a clinician or supervisor
+    confirms or rejects a name correction.  The feedback is persisted
+    immediately and applied on the very next call to run().
+
+    Parameters
+    ----------
+    surface            : The raw surface span as it appeared in the transcript
+                         (e.g. "Dharni Kumar").
+    proposed_canonical : The canonical name Layer 01 proposed
+                         (e.g. "Dharani Kumar").
+    accepted           : True  → correction is correct.
+                         False → correction is wrong.
+    role               : Registry role of proposed_canonical
+                         ("nurse" | "patient" | "unknown").
+    correct_canonical  : When accepted=False and the true canonical is known,
+                         supply it here (e.g. "Dharani Menon").
+                         Stored as a confusion pair for automatic rerouting.
+    correct_role       : Role of correct_canonical, if known.
+    ordis_id           : Session / document identifier (logging only).
+    cfg                : ConfigManager (used to locate custom store path).
+
+    Example
+    -------
+    >>> # Nurse confirmed "Dharni Kumar" → "Dharani Kumar" is correct
+    >>> record_feedback("Dharni Kumar", "Dharani Kumar", accepted=True,
+    ...                 role="nurse", ordis_id="session_001")
+
+    >>> # Reviewer says "Siobhán Murphy" was wrongly corrected to "Siobhán Ryan"
+    >>> record_feedback("Siobhán Murphy", "Siobhán Ryan", accepted=False,
+    ...                 correct_canonical="Siobhán Murphy", correct_role="patient")
+    """
+    store = _get_learn_store(cfg)
+    store.record(
+        surface=surface,
+        proposed=proposed_canonical,
+        accepted=accepted,
+        role=role,
+        correct=correct_canonical,
+        corr_role=correct_role,
+    )
+    _log = logger.getChild(ordis_id) if ordis_id else logger
+    _log.info(
+        "L1-learn: feedback — '%s' → '%s' %s%s",
+        surface,
+        proposed_canonical,
+        "ACCEPTED" if accepted else "REJECTED",
+        f" (correct='{correct_canonical}')" if correct_canonical else "",
+    )
+
+
+def get_learning_stats(cfg: Optional[ConfigManager] = None) -> Dict:
+    """
+    Return a summary of the learning store for dashboards / health checks.
+
+    Returns
+    -------
+    Dict with keys: confirmed_count, rejected_surfaces, confusion_pairs,
+    total_feedback, most_confused, last_updated, store_path.
+    """
+    return _get_learn_store(cfg).stats()
+
+
+def reset_learning(cfg: Optional[ConfigManager] = None) -> None:
+    """
+    Wipe the entire learning store.
+
+    ⚠ IRREVERSIBLE — intended for test environments only.
+    In production, remove individual entries by calling record_feedback()
+    with the corrected value instead.
+    """
+    _get_learn_store(cfg).reset()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Public API — run()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run(
+    text:      str,
+    accent:    str                     = "ml_In",
+    ordis_id:  str                     = "",
+    cfg:       Optional[ConfigManager] = None,
+    mongo_db:  Optional[object]        = None,
+) -> Tuple[str, List[NameDetection]]:
+    """
+    Layer 01 — Name Detection & Correction.  100 % local.
+
+    Returns
+    -------
+    (corrected_text, detections)
+
+    detections contains ALL detected names (corrected + already-correct +
+    unresolved). Role is always from the registry, not sentence position.
+
+    Edge-case behaviour
+    -------------------
+    Only nurse in text      → detected as nurse, text unchanged for patient slot
+    Unknown name            → is_unresolved=True, role="unknown", text unchanged
+    No names detected       → empty list, text unchanged
+    Role reversal in text   → roles still correct (registry-bound)
+
+    v5 additions
+    ------------
+    • LearningStore consulted after each _resolve() call.
+    • Irish names from irish_names.py merged into patient index (configurable).
+    """
+    import time as _t
+    t0 = _t.perf_counter()
+
+    if not isinstance(text, str):
+        raise TypeError(f"Layer 01 expects str, got {type(text).__name__}.")
+    _validate_id(ordis_id)
+
+    text = unicodedata.normalize("NFC", text)
+    if not text.strip():
+        return text, []
+
+    log = logger.getChild(ordis_id) if ordis_id else logger
+    log.info("L1: %d chars (accent=%s).", len(text), accent)
+
+    if cfg is None:
+        cfg = ConfigManager()
+    patients, nurses = load_name_registry(cfg, mongo_db)
+    all_names = patients + nurses
+
+    if not all_names:
+        log.warning("L1: Registry empty.")
+        return text, []
+
+    # ── Irish name augmentation flag ──────────────────────────────────────────
+    include_irish = True
+    try:
+        val = cfg.get("LAYER01_IRISH_NAMES")  # type: ignore[attr-defined]
+        if val is not None:
+            include_irish = bool(val)
+    except Exception:
+        pass
+
+    p_idx, n_idx = _get_indexes(patients, nurses, include_irish=include_irish)
+
+    # ── Learning store ────────────────────────────────────────────────────────
+    store = _get_learn_store(cfg)
+
+    # ── Detect ───────────────────────────────────────────────────────────────
+    ner_spans  = _detect_ner(text)
+    heu_spans  = _detect_heuristic(text)
+    win_spans  = _detect_window(text, all_names)
+    ner_set    = {s.lower() for s in ner_spans}
+    heu_set    = {s for s in heu_spans}
+
+    all_spans = _dedup(ner_spans + heu_spans + win_spans)
+    all_spans.sort(key=len, reverse=True)   # longest first
+
+    log.info("L1: NER:%d heu:%d win:%d → %d unique spans.",
+             len(ner_spans), len(heu_spans), len(win_spans), len(all_spans))
+
+    result           = text
+    detections:       List[NameDetection] = []
+    replaced:         Set[str]  = set()
+    claimed_surnames: Set[str]  = set()    # surnames locked by confirmed matches
+
+    for surface in all_spans:
+        if surface in replaced:
+            continue
+
+        is_ner  = surface.lower() in ner_set
+        det_mth = "ner" if is_ner else ("heuristic" if surface in heu_set else "window")
+
+        # Core resolution pipeline
+        can, role, conf, path = _resolve(
+            surface, p_idx, n_idx, is_ner, claimed_surnames
+        )
+
+        # ── Apply learning ────────────────────────────────────────────────────
+        can, role, conf, path = store.apply(surface, can, role, conf, path)
+
+        # ── Unresolved ────────────────────────────────────────────────────────
+        if can is None:
+            detections.append(NameDetection(
+                surface_span=surface, canonical_name=None, role="unknown",
+                confidence=conf, was_corrected=False, is_unresolved=True,
+                resolution_path="none", tier="skipped",
+                detection_method=det_mth, ordis_id=ordis_id,
+            ))
+            log.debug("L1: '%s' unresolved (conf=%.2f).", surface, conf)
+            continue
+
+        # ── Determine tier ────────────────────────────────────────────────────
+        if conf >= _TIER_AUTO_SILENT:
+            tier = "auto_silent"
+        elif conf >= _TIER_AUTO_LOG:
+            tier = "auto_log"
+        elif conf >= _TIER_AUDIT:
+            tier = "audit"
+        else:
+            # Detected but not confident enough to correct
+            detections.append(NameDetection(
+                surface_span=surface, canonical_name=can, role=role,
+                confidence=conf, was_corrected=False, is_unresolved=False,
+                resolution_path=path, tier="skipped",
+                detection_method=det_mth, ordis_id=ordis_id,
+            ))
+            log.debug("L1: '%s' below correction threshold (%.2f).", surface, conf)
+            continue
+
+        # ── Apply text replacement ────────────────────────────────────────────
+        needs_change = (_strip_name(surface) != _strip_name(can))
+        if needs_change:
+            new_result = _replace(result, surface, can)
+            if new_result == result:
+                needs_change = False   # span not found verbatim
+            else:
+                result = new_result
+                replaced.add(surface)
+
+        # Lock this name's surname so F2 can use it for later spans
+        canon_toks = _strip_name(can).split()
+        if len(canon_toks) >= 2:
+            claimed_surnames.add(canon_toks[-1].lower())
+
+        detections.append(NameDetection(
+            surface_span=surface, canonical_name=can, role=role,
+            confidence=conf, was_corrected=needs_change, is_unresolved=False,
+            resolution_path=path, tier=tier,
+            detection_method=det_mth, ordis_id=ordis_id,
+        ))
+
+        if needs_change:
+            msg = (f"L1: '{_YL}{surface}{_R}' → '{_GR}{can}{_R}' "
+                   f"[{role}, {conf:.2f}, {tier}, {path}]")
+            if tier == "auto_silent":
+                log.debug(msg)
+            elif tier == "auto_log":
+                log.info(msg)
+            else:
+                log.warning("AUDIT %s", msg)
+        else:
+            log.debug("L1: '%s' → %s '%s' (%.2f, %s). No text change.",
+                      surface, role, can, conf, path)
+
+    n_corr = sum(1 for d in detections if d.was_corrected)
+    n_unre = sum(1 for d in detections if d.is_unresolved)
+    log.info("L1: %.3fs — %d detected, %d corrected, %d unresolved.",
+             _t.perf_counter() - t0, len(detections), n_corr, n_unre)
+
+    return result, detections
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_simple(
+    text: str, accent: str = "ml_In", ordis_id: str = "",
+    cfg: Optional[ConfigManager] = None, mongo_db: Optional[object] = None,
+) -> Tuple[str, List[Tuple[str, str]]]:
+    """Backward-compat: returns (corrected_text, [(surface, canonical), …])."""
+    corrected, dets = run(text, accent, ordis_id, cfg, mongo_db)
+    return corrected, [(d.surface_span, d.canonical_name)
+                       for d in dets if d.was_corrected and d.canonical_name]
+
+
+def get_role_map(detections: List[NameDetection]) -> Dict[str, str]:
+    """
+    Convenience helper: {canonical_name: role} from a detection list.
+    Role is registry-bound (never position-inferred).
+
+    Example
+    -------
+    >>> {"Dharani Kumar": "nurse", "Marcus O'Reilly": "patient"}
+    """
+    out: Dict[str, str] = {}
+    for d in detections:
+        key = d.canonical_name or d.surface_span
+        if key and d.role not in ("unknown", ""):
+            out[key] = d.role
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CLI — runs the exact QA cases from the 08-Apr-2026 QA sheet
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
+    logging.basicConfig(level=logging.WARNING,
+                        format="%(levelname)-8s %(name)s — %(message)s")
 
-    logging.basicConfig(
-        level   = logging.DEBUG,
-        format  = "%(levelname)-8s %(name)s — %(message)s",
-    )
+    QA: List[Tuple[str, str, Optional[str], Optional[str], Optional[str]]] = [
+        # (label, input, text_must_contain, expected_nurse, expected_patient)
+        ("POS-1 Correct names",
+         "Dharani Kumar is attending Marcus O'Reilly for routine checkup.",
+         None, "Dharani Kumar", "Marcus O'Reilly"),
 
-    _SAMPLES = [
-        # Standard trigger-based cases
-        "Resident Maacuus O'Rielly (room 22) was observed wandering. "
-        "Nurse Dharanee reported on patient DA Dara. "
-        "Recording for Willeem Wooak: the patient refused care.",
+        ("POS-2 Correct names",
+         "Priya Patel gave medication to Mary Collins on time.",
+         None, "Priya Patel", "Mary Collins"),
 
-        # Trigger word at end of string (no tokens follow)
-        "The incident was reported by nurse",
+        ("POS-3 Correct names",
+         "Sarah Johnson checked the vitals of John Doyle.",
+         None, "Sarah Johnson", "John Doyle"),
 
-        # All-caps name
-        "Nurse DHARANEE administered medication at 14:00.",
+        ("NEG-1 Same Nurse & Resident name",
+         "Emma Thompson assisted Emma Thompson during breakfast.",
+         None, "Emma Thompson", "Emma Thompson"),
 
-        # Same misspelling twice — both should be corrected
-        "Nurse Dharanee spoke with patient Dharanee's family.",
+        ("NEG-2 Dharni Kumar (nurse typo)",
+         "Dharni Kumar is attending Marcus O'Reilly.",
+         "Dharani Kumar", "Dharani Kumar", "Marcus O'Reilly"),
 
-        # Compound apostrophe name — FIX-1 / FIX-2
-        "Resident Maacuus O'Rielly was discharged.",
+        ("NEG-3 Prija Patil",
+         "Prija Patil gave medication to Mary Collins.",
+         "Priya Patel", "Priya Patel", "Mary Collins"),
 
-        # Unicode curly apostrophe — FIX-6
-        "Resident Maacuus O\u2019Rielly was admitted.",
+        ("NEG-4 Sarah Jonson",
+         "Sarah Jonson checked the vitals of John Doyle.",
+         "Sarah Johnson", "Sarah Johnson", "John Doyle"),
 
-        # Possessive bleeding into fragment — FIX-2
-        "Nurse Dharanee's patient refused medication.",
+        ("NEG-5 Marcus O'Reily",
+         "Dharani Kumar is attending Marcus O'Reily.",
+         "Marcus O'Reilly", "Dharani Kumar", "Marcus O'Reilly"),
 
-        # Punctuation bleeding into fragment — FIX-1
-        "Nurse Dharanee. The patient was calm.",
+        ("NEG-6 Mary Collin",
+         "Priya Patel gave medication to Mary Collin.",
+         "Mary Collins", "Priya Patel", "Mary Collins"),
 
-        # Single-token name without trigger word — FIX-3
-        "Dharanee administered meds. Willeem confirmed the handover.",
+        ("NEG-7 Anne Kelv",
+         "Emma Thompson assisted Anne Kelv.",
+         "Anne Kelly", "Emma Thompson", "Anne Kelly"),
 
-        # Stop word immediately after trigger — FIX-5
-        "Medication was administered by nurse on duty at 14:00.",
+        ("NEG-8 Marcus Reily",
+         "Dharni Kumar is attending Marcus Reily.",
+         "Marcus O'Reilly", "Dharani Kumar", "Marcus O'Reilly"),
 
-        # Empty input
-        "",
+        ("NEG-9 Lisa Chan",
+         "Lisa Chan completed the report for Daniel Ryan.",
+         "Lisa Chen", "Lisa Chen", "Daniel Ryan"),
 
-        # Whitespace-only input
-        "   ",
+        ("FAIL-1 Role Swap",
+         "Marcus O'Reilly is assisting Dharani Kumar.",
+         None, "Dharani Kumar", "Marcus O'Reilly"),
 
-        # No names at all
-        "The patient was observed sleeping. Vitals are stable.",
+        ("NEG-10 Sarah Johnsonaa",
+         "Sarah Johnsonaa checking vitals John Dolle.",
+         "Sarah Johnson", "Sarah Johnson", "John Doyle"),
 
-        # Backward-compat unpacking with zero corrections
-        "All vitals stable. No incidents recorded.",
+        ("FAIL-2 Anne Thompson contamination",
+         "Emma Thompson assist Anne Thompson during breakfast.",
+         "Anne Kelly", "Emma Thompson", "Anne Kelly"),
+
+        ("FAIL-3 First name only + surname mismatch",
+         "Dharani  attending Marcus Murphy.",
+         "Dharani Kumar", "Dharani Kumar", "Marcus O'Reilly"),
+
+        ("FAIL-4 Nurse only",
+         "Lisa Chen completed report.",
+         None, "Lisa Chen", None),
+
+        ("FAIL-5 Unknown resident",
+         "Dharani Kumar gave medicine to Rahul Sharma.",
+         None, "Dharani Kumar", None),
+
+        ("FAIL-6 No registry names",
+         "Ganga gave medication to maya.",
+         None, None, None),
+
+        ("NEG-11 Wrong capitalisation",
+         "Prija Patel gave medication to Mary collins.",
+         "Mary Collins", "Priya Patel", "Mary Collins"),
+
+        # ── v5 learning round-trip tests ──────────────────────────────────────
+        ("LEARN-1 Confirmed correction sticks",
+         "Dharni Kumar is attending Marcus O'Reilly.",
+         "Dharani Kumar", "Dharani Kumar", "Marcus O'Reilly"),
+
+        ("LEARN-2 Irish name phonetic (shivawn)",
+         "Shivawn O'Brien assisted Mary Collins.",
+         None, None, "Mary Collins"),
+
+        ("LEARN-3 Irish O' prefix dropped by ASR",
+         "Priya Patel gave medication to Sullivan.",
+         None, "Priya Patel", None),
     ]
 
-    samples = [sys.argv[1]] if len(sys.argv) > 1 else _SAMPLES
+    cfg_inst = ConfigManager()
 
-    for idx, text_in in enumerate(samples, 1):
-        print(f"\n{'─' * 66}")
-        print(f"  SAMPLE {idx}: {text_in!r}")
-        result = run(text_in, ordis_id=f"test-{idx:02d}")
-        out, corrections = result          # backward-compat unpacking
+    # ── Simulate a learning feedback before running the suite ─────────────────
+    # Pre-seed one confirmed correction so LEARN-1 demonstrates the boost path
+    reset_learning(cfg_inst)   # clean slate for QA
+    record_feedback(
+        "Dharni Kumar", "Dharani Kumar", accepted=True,
+        role="nurse", ordis_id="qa-seed", cfg=cfg_inst,
+    )
 
-        print(f"\n  OUTPUT : {out!r}")
-        print(f"  ACCENT NORMALISED: {result.accent_normalised}")
-        if corrections:
-            print(f"  CORRECTIONS ({len(corrections)}):")
-            for c in result.corrections:
-                print(f"    {c}")
-        else:
-            print("  CORRECTIONS: none")
+    passed = failed = 0
+
+    W = 90
+    print(f"\n{'═' * W}")
+    print(f"{'ORDIS Layer 01  ·  QA Test Suite  (v5 · Learning + Irish Names)':^{W}}")
+    print(f"{'═' * W}\n")
+
+    for label, inp, must_contain, exp_nurse, exp_patient in QA:
+        corrected, dets = run(inp, ordis_id="qa", cfg=cfg_inst)
+        rm = get_role_map(dets)
+
+        txt_ok  = (must_contain is None) or (must_contain in corrected)
+        nrs_ok  = (exp_nurse  is None) or any(
+            v == "nurse"   and (k == exp_nurse   or exp_nurse   in k)
+            for k, v in rm.items()
+        )
+        pat_ok  = (exp_patient is None) or any(
+            v == "patient" and (k == exp_patient or exp_patient in k)
+            for k, v in rm.items()
+        )
+        ok = txt_ok and nrs_ok and pat_ok
+        tag = f"{_GR}PASS{_R}" if ok else f"{_RE}FAIL{_R}"
+        passed += ok; failed += (not ok)
+
+        print(f"  [{tag}] {label}")
+        print(f"       IN : {inp.strip()}")
+        print(f"       OUT: {corrected.strip()}")
+        roles = " | ".join(
+            f"{v.capitalize()}: {k}"
+            for k, v in sorted(rm.items(), key=lambda x: x[1])
+        ) or "(none)"
+        print(f"       ROLES: {roles}")
+
+        if not txt_ok:
+            print(f"        {_RE}✘ text should contain '{must_contain}'{_R}")
+        if not nrs_ok:
+            print(f"        {_RE}✘ nurse  expected '{exp_nurse}'{_R}")
+        if not pat_ok:
+            print(f"        {_RE}✘ patient expected '{exp_patient}'{_R}")
+        print()
+
+    stats = get_learning_stats(cfg_inst)
+    colour = _GR if failed == 0 else _RE
+    print(f"{'─' * W}")
+    print(f"  {_B}Results:{_R}  "
+          f"{_GR}{passed} passed{_R}  ·  "
+          f"{colour}{failed} failed{_R}  "
+          f"out of {passed + failed}")
+    print(f"  {_B}Learning store:{_R}  "
+          f"{stats['confirmed_count']} confirmed  ·  "
+          f"{stats['rejected_surfaces']} rejected surfaces  ·  "
+          f"{stats['total_feedback']} total feedback  ·  "
+          f"path: {stats['store_path']}")
+    print(f"{'═' * W}\n")

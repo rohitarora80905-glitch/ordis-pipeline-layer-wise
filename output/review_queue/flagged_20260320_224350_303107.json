@@ -1,0 +1,16 @@
+{
+  "timestamp": "20260320_224350_303107",
+  "pipeline_version": "v6",
+  "meta": {
+    "patient": "Patrick O'Sullivan",
+    "nurse": "Anu Joseph",
+    "room": "209",
+    "doc_type": "Raw Transcript"
+  },
+  "flag_note": "dolo name not mentioned",
+  "raw_text": "fever 101.8 giv dolo and cold spounge",
+  "corrected_text": "Temperature 101.8°F — administered paracetamol and applied cold sponge.",
+  "corrections": [],
+  "hallucination_flags": [],
+  "l5_changes": []
+}

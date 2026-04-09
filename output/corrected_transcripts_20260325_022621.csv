@@ -1,0 +1,41 @@
+id,nurse,patient,room,corrected_note,confidence,corrections,review_decision,hallucination_count,hallucination_flags,l5_changes_count,l5_change_log,pipeline_version
+1,Sarah Kelly,Sean O Connor,201,"BP 180/120 mmHg, blood glucose elevated — administer insulin as prescribed.",0.0,0,accepted,0,,0,,v10
+2,Meera Menon,Mary Johnson,102,"Fell yesterday, complaining of dizziness — no fracture identified. Paracetamol administered.",0.0,0,accepted,0,,0,,v10
+3,Reshma Pillai,Conor Kelly,203,Complaining of chest pain since morning — ECG potentially required.,0.0,0,accepted,0,,0,,v10
+4,Sneha Kurian,Sorcha Burke,204,"Patient vomiting twice, administered ondansetron.",0.0,0,accepted,0,,0,,v10
+5,Asha Varghese,Cian Walsh,205,Hypoglycaemia — BM 3.6 mmol/L (54 mg/dL). Administer dextrose promptly.,0.0,0,accepted,0,,1,"[""vitals/blood glucose format""]",v10
+6,Divya Thomas,Niamh Ryan,206,Patient refusing food for 2 days — IV fluids commenced. Administering normal saline.,0.0,0,accepted,0,,0,,v10
+7,Lekha Nair,Eoin Doyle,207,O2 sats 89% — commence 5L/min O2 via mask immediately.,0.0,0,accepted,0,,0,,v10
+8,Neethu Mathew,Nora Gallagher,208,Patient agitated and vocalising — IV cannula self-removed by patient during episode.,0.88,0,accepted,0,,0,,v10
+9,Anu Joseph,Darragh Osullivan,209,Temperature 101.8°F — administered paracetamol and applied cold sponge.,0.0,0,accepted,0,,0,,v10
+10,Roshni George,Clodagh Brennan,210,BP 90/60 mmHg — doctor to be notified immediately.,0.0,0,accepted,0,,0,,v10
+11,Deepa Nambiar,Patrick Oreilly,211,Urination not occurred since morning — potential catheter blockage.,0.0,0,accepted,0,,0,,v10
+12,Sindhu Krishnan,Maeve Quinn,212,"Fell in the bathroom, complaining of hip pain — X-ray required to rule out fracture.",0.0,0,accepted,0,,0,,v10
+13,Rekha Balan,Ronan Mccarthy,213,Blood glucose 320mg/dL — administer insulin as per sliding scale protocol.,0.0,0,accepted,0,,0,,v10
+14,Anitha Suresh,Siobhan Fitzpatrick,214,"Coughing persistently, producing green-coloured sputum — antibiotics commenced as prescribed.",0.0,0,accepted,0,,0,,v10
+15,Mini Varma,Fionn Keane,215,"Patient appears confused, speaking irrationally, possibly experiencing delirium.",0.0,0,accepted,0,,0,,v10
+16,Beena Chacko,Grainne Oneill,216,Hyponatremia identified — sodium level 122 mmol/L. Prescribed salt tablets to be administered.,0.0,0,accepted,0,,0,,v10
+17,Shilpa Nair,Declan Odonnell,217,BP 200/110 mmHg — commence amlodipine as prescribed.,0.0,0,accepted,0,,0,,v10
+18,Nisha Mathew,Aisling Kennedy,218,Vomiting ongoing — oral intake ceased. IV fluids commenced.,0.0,0,accepted,0,,0,,v10
+19,Soumya Thomas,Brendan Ohara,219,BM 6.5 mmol/L — administer glucose water as prescribed.,0.0,0,accepted,0,,1,"[""vitals/blood glucose format""]",v10
+20,Bindu Varghese,Emer Nolan,220,"Patient complaining of left-sided chest pain, tearful.",0.0,0,accepted,0,,0,,v10
+21,Greeshma Nair,Ciaran Lynch,221,ECG shows abnormal waveform — doctor informed.,0.0,0,accepted,0,,0,,v10
+22,Amala Joseph,Patricia Hogan,222,"Patient refuses medication, stating she does not need it.",0.82,0,accepted,0,,0,,v10
+23,Akhila Pillai,Tadhg Moloney,223,Experiencing breathing difficulty with wheeze — nebuliser administered.,0.0,0,accepted,0,,0,,v10
+24,Jessy George,Roisin Cullen,224,BP dropped to 80 mmHg systolic — IV fluid bolus commenced.,0.0,0,accepted,0,,0,,v10
+25,Veena Kurup,Padraig Hayes,225,Patient self-removed IV cannula — recurring incident.,0.0,0,accepted,0,,0,,v10
+26,Ancy Mathew,Eimear Oshea,226,Blood glucose elevated at 410mg/dL — ketone test pending.,0.0,0,accepted,0,,0,,v10
+27,Linda Thomas,Sean Kavanagh,227,"Fell out of bed, no apparent injury — patient to be observed.",0.0,0,accepted,0,,0,,v10
+28,Rini Varghese,Sinead Riley,228,Patient not passing stool for 4 days — laxative administered.,0.0,0,accepted,1,"[{""phrase"": ""not passing"", ""position"": ""Patient not passing stool for 4 days \u2014 laxative a"", ""reason"": ""Common word 'not' found in name slot after 'Patient' \u2014 likely ASR hallucination."", ""confidence"": ""high"", ""layer"": ""4B-rule""}]",0,,v10
+29,Neha Nair,Liam Power,229,O2 sats 86% — consider commencing BiPAP if no improvement.,0.0,0,accepted,0,,0,,v10
+30,Remya Joseph,Nuala Maher,230,"Experienced dizziness while mobilising, possibly related to hypotension.",0.0,0,accepted,0,,0,,v10
+31,Shari Mathew,Sean Healy,231,"UTI suspected, patient complaining of dysuria and burning pain — antibiotics administered as prescribed.",0.0,0,accepted,0,,0,,v10
+32,Resmi George,Brid Mcgrath,232,"Patient experiencing delusions, reporting a snake in the room, and vocalising aggressively.",0.0,0,accepted,0,,0,,v10
+33,Sruthi Pillai,Colm Burke,233,BM 5.2 mmol/L — administered chocolate milk.,0.0,0,accepted,0,,1,"[""vitals/blood glucose format""]",v10
+34,Nimisha Kurian,Deirdre Flanagan,234,"Patient aspirated food, coughing excessively.",0.0,0,accepted,0,,0,,v10
+35,Archana Nair,Fergus Carroll,235,"Heart rate 130bpm, tachycardia.",0.0,0,accepted,0,,0,,v10
+36,Preethi Thomas,Una Casey,236,Patient experiencing persistent sleep disturbance for 3 nights — administered small dose of haloperidol.,0.0,0,accepted,0,,0,,v10
+37,Aparna Menon,Kevin Brady,237,Haematemesis reported — possible peptic ulcer. Doctor to be notified.,0.0,0,accepted,0,,0,,v10
+38,Amy Joseph,Imelda Duffy,238,"BP 70 mmHg systolic, suspecting shock.",0.0,0,accepted,0,,0,,v10
+39,Aswathy Pillai,Martin Daly,239,"Blood glucose 350mg/dL — insulin administered, note earlier dose administered incorrectly.",0.0,0,accepted,0,,0,,v10
+40,Sheena Varghese,Eileen Sheridan,240,"Fell in the washroom, sustaining a head injury.",0.0,0,accepted,0,,0,,v10
